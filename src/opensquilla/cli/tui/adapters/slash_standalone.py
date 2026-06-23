@@ -66,6 +66,7 @@ class StandaloneStreamResponse(Protocol):
         timeout: float | None = None,
         tui_output: TuiOutputHandle | None = None,
         pending_input_provider: PendingInputProvider | None = None,
+        reply_mode: str | None = None,
     ) -> TurnResult: ...
 
 
@@ -82,6 +83,7 @@ class StandaloneImageCommandHandler(Protocol):
         timeout: float | None = None,
         tui_output: TuiOutputHandle | None = None,
         pending_input_provider: PendingInputProvider | None = None,
+        reply_mode: str | None = None,
     ) -> TurnResult: ...
 
 

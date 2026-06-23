@@ -160,6 +160,16 @@ export interface ChatUsagePayload {
   [key: string]: unknown
 }
 
+export interface FusionContributionMember {
+  memberId: string
+  provider: string
+  model: string
+  label: string
+  selectedSegments: number
+  selectedChars: number
+  share: number
+}
+
 /** Per-turn model reasoning captured from thinking deltas / done backfill. */
 export interface ChatReasoning {
   text: string
@@ -204,6 +214,8 @@ export interface ChatMessageMeta {
   hasSaved: boolean
   savedLabel: string
   turnSavedPct?: number
+  fusionContributions?: FusionContributionMember[]
+  fusionContributionLabel?: string
 }
 
 export interface ChatRenderedMessage {

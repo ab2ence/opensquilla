@@ -55,6 +55,7 @@ class StandaloneStreamResponse(Protocol):
         *,
         tui_output: TuiOutputHandle | None = None,
         pending_input_provider: PendingInputProvider | None = None,
+        reply_mode: str | None = None,
     ) -> TurnResult: ...
 
 
@@ -71,6 +72,7 @@ class StandaloneImageCommandHandler(Protocol):
         *,
         tui_output: TuiOutputHandle | None = None,
         pending_input_provider: PendingInputProvider | None = None,
+        reply_mode: str | None = None,
     ) -> TurnResult: ...
 
 
@@ -198,16 +200,33 @@ async def run_standalone_chat(
     model: str | None,
     session_id: str | None,
     deps: StandaloneRuntimeDependencies,
+    reply_mode: str | None = None,
     workspace: str | None = None,
     workspace_strict: bool | None = None,
     timeout: float | None = None,
 ) -> None:
     """Run standalone chat without owning a concrete terminal application."""
     from opensquilla.cli.agent_cmd import _resolve_workspace_strict
+    from opensquilla.cli.agent_cmd import _with_squilla_router_enabled_config
     from opensquilla.gateway import build_services, build_turn_runner_from_services
     from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
 
-    svc = await build_services()
+    if reply_mode:
+        from opensquilla.gateway.config import GatewayConfig
+        from opensquilla.reply_modes import normalize_reply_mode
+
+        cfg = GatewayConfig.load()
+        effective_reply_mode = normalize_reply_mode(
+            reply_mode,
+            default=getattr(getattr(cfg, "reply", None), "default_mode", "router"),
+        )
+        if effective_reply_mode in {"direct", "fusion"}:
+            cfg = _with_squilla_router_enabled_config(cfg, False)
+        svc = await build_services(config=cfg)
+        reply_mode_kwargs = {"reply_mode": effective_reply_mode}
+    else:
+        svc = await build_services()
+        reply_mode_kwargs = {}
     session_manager = svc.session_manager
     if session_manager is None:
         raise RuntimeError("standalone chat requires session manager")
@@ -289,6 +308,7 @@ async def run_standalone_chat(
                     timeout=timeout,
                     tui_output=tui_output,
                     pending_input_provider=pending_input_provider,
+                    **reply_mode_kwargs,
                 )
 
             async def _image_command_handler(
@@ -313,6 +333,7 @@ async def run_standalone_chat(
                     timeout=timeout,
                     tui_output=tui_output,
                     pending_input_provider=pending_input_provider,
+                    **reply_mode_kwargs,
                 )
 
             slash_context = _standalone_slash_adapter.StandaloneSlashContext(
@@ -356,6 +377,7 @@ async def run_standalone_chat(
             timeout=timeout,
             tui_output=deps.get_tui_output(session_context.scope),
             pending_input_provider=pending_input_provider,
+            **reply_mode_kwargs,
         )
         session_context.state.model = result.model_after or session_context.model
         session_context.state.transcript.add("user", user_input)

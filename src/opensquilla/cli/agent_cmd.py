@@ -91,6 +91,7 @@ async def run_agent_once(
     agent_id: str = "main",
     session_id: str = "",
     model: str | None = None,
+    reply_mode: str | None = None,
     workspace: str | None = None,
     workspace_strict: bool | None = None,
     thinking: str | None = None,
@@ -131,6 +132,12 @@ async def run_agent_once(
     if max_iterations is not None and max_iterations < 0:
         raise ValueError("max_iterations must be an integer >= 0")
     cfg = config or GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
+    from opensquilla.reply_modes import normalize_reply_mode
+
+    effective_reply_mode = normalize_reply_mode(
+        reply_mode,
+        default=getattr(getattr(cfg, "reply", None), "default_mode", "router"),
+    )
     permissions_profile = _resolve_permissions_profile(permissions, cfg)
     elevated = permissions_profile if permissions_profile in {"on", "bypass", "full"} else None
     run_attachments: list[dict[str, Any]] = list(attachments or [])
@@ -145,6 +152,8 @@ async def run_agent_once(
         service_cfg = _with_agent_model_config(service_cfg, effective_model)
     if thinking:
         service_cfg = _with_agent_thinking_config(service_cfg, thinking)
+    if effective_reply_mode in {"direct", "fusion"}:
+        service_cfg = _with_squilla_router_enabled_config(service_cfg, False)
     effective_workspace_strict = _resolve_workspace_strict(
         cli_value=workspace_strict,
         config_value=getattr(service_cfg, "workspace_strict", None),
@@ -266,6 +275,7 @@ async def run_agent_once(
             tool_context=tool_ctx,
             agent_id=agent_id,
             model=effective_model,
+            reply_mode=effective_reply_mode,
             timeout=timeout,
             max_iterations=max_iterations,
             iteration_timeout=iteration_timeout,
@@ -403,6 +413,23 @@ def _with_agent_thinking_config(config: Any, thinking: str) -> Any:
         return config.model_copy(update={"llm": llm})
     copied = copy.copy(config)
     setattr(copied, "llm", llm)
+    return copied
+
+
+def _with_squilla_router_enabled_config(config: Any, enabled: bool) -> Any:
+    router = getattr(config, "squilla_router", None)
+    if router is None:
+        return config
+    if hasattr(router, "model_copy"):
+        router = router.model_copy(update={"enabled": enabled})
+    else:
+        router = copy.copy(router)
+        setattr(router, "enabled", enabled)
+
+    if hasattr(config, "model_copy"):
+        return config.model_copy(update={"squilla_router": router})
+    copied = copy.copy(config)
+    setattr(copied, "squilla_router", router)
     return copied
 
 
@@ -752,6 +779,16 @@ def run_agent_command(
             "Defaults to OPENSQUILLA_AGENT_PERMISSIONS, then permissions.default_mode."
         ),
     ),
+    reply_mode: str = typer.Option(
+        "",
+        "--reply-mode",
+        help="Reply mode: router, direct, or fusion.",
+    ),
+    fusion: bool = typer.Option(
+        False,
+        "--fusion",
+        help="Shortcut for --reply-mode fusion.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Run a single agent turn for automation."""
@@ -781,6 +818,8 @@ def run_agent_command(
     clean_room = _unwrap_typer_default(clean_room)
     stateless_keep_project_rules = _unwrap_typer_default(stateless_keep_project_rules)
     permissions = _unwrap_typer_default(permissions)
+    reply_mode = _unwrap_typer_default(reply_mode)
+    fusion = _unwrap_typer_default(fusion)
     json_output = _unwrap_typer_default(json_output)
 
     result = asyncio.run(
@@ -789,6 +828,7 @@ def run_agent_command(
             agent_id=agent_id,
             session_id=session_id,
             model=model or None,
+            reply_mode="fusion" if fusion else (reply_mode or None),
             workspace=workspace or None,
             workspace_strict=workspace_strict,
             workspace_lockdown=workspace_lockdown,

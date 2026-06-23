@@ -179,6 +179,8 @@ def _should_disable_openrouter_reasoning_by_default(model: str) -> bool:
     thinking, while MiniMax reasoning endpoints reject that same payload.
     """
     return model.strip().lower() in {
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
         "z-ai/glm-4.5",
         "z-ai/glm-4.5-air",
         "z-ai/glm-5",
@@ -855,9 +857,6 @@ class OpenAIProvider:
             payload["thinking"] = {"type": "disabled"}
         elif (
             self._provider_kind == "openrouter"
-            and caps
-            and caps.supports_reasoning
-            and caps.reasoning_format == "openrouter"
             and _should_disable_openrouter_reasoning_by_default(self._model)
         ):
             payload["reasoning"] = {"enabled": False}

@@ -1,11 +1,12 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // Every control-UI surface must use the semantic color tokens from
 // src/assets/base.css so both themes render correctly. Raw hex / rgb() / hsl()
 // color literals anywhere under src/ (outside the token definitions in
 // base.css) are violations — use a token, or color-mix(in srgb, var(--token) …).
-const root = new URL('..', import.meta.url).pathname
+const root = fileURLToPath(new URL('..', import.meta.url))
 const srcDir = join(root, 'src')
 const tokenSource = join(srcDir, 'assets', 'base.css')
 

@@ -84,6 +84,7 @@ class DoneEvent:
     # tests does not silently shift earlier args.
     cache_write_tokens: int = 0
     cost_source: str = "none"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -151,7 +152,7 @@ StreamEvent = (
 # Tool definition (Pydantic BaseModel — external API boundary)
 # ---------------------------------------------------------------------------
 
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 
 class ToolParam(BaseModel):
@@ -224,6 +225,7 @@ class ChatConfig(BaseModel):
     thinking_level: Any | None = None
     provider_request_max_chars: int = 0
     tool_choice: Any | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

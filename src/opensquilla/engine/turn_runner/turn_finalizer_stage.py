@@ -337,7 +337,53 @@ def _turn_usage_payload(
     for key, value in optional_fields.items():
         if value is not None:
             payload[key] = value
+    fusion_summary = _compact_fusion_summary(
+        getattr(done_event, "metadata", {}).get("fusion_summary")
+        if isinstance(getattr(done_event, "metadata", None), dict)
+        else None
+    )
+    if fusion_summary is not None:
+        payload["fusion_summary"] = fusion_summary
     return payload
+
+
+def _compact_fusion_summary(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    output_contribution = raw.get("output_contribution")
+    if not isinstance(output_contribution, dict):
+        return None
+    raw_members = output_contribution.get("members")
+    if not isinstance(raw_members, list):
+        return None
+    members: list[dict[str, Any]] = []
+    for item in raw_members:
+        if not isinstance(item, dict):
+            continue
+        try:
+            share = float(item.get("share", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            share = 0.0
+        members.append(
+            {
+                "member_id": str(item.get("member_id") or ""),
+                "provider": str(item.get("provider") or ""),
+                "model": str(item.get("model") or ""),
+                "selected_segments": int(item.get("selected_segments", 0) or 0),
+                "selected_chars": int(item.get("selected_chars", 0) or 0),
+                "share": max(0.0, min(1.0, share)),
+            }
+        )
+    return {
+        "trace_id": str(raw.get("trace_id") or ""),
+        "algorithm": str(raw.get("algorithm") or "specem_weighted_pairwise"),
+        "rounds_completed": int(raw.get("rounds_completed", 0) or 0),
+        "member_count": int(raw.get("member_count", len(members)) or len(members)),
+        "output_contribution": {
+            "basis": str(output_contribution.get("basis") or "selected_output_chars"),
+            "members": members,
+        },
+    }
 
 @runtime_checkable
 class SessionTotalsPort(Protocol):

@@ -43,6 +43,7 @@ def test_chat_send_request_preserves_message_attachments_and_intent() -> None:
         attachments=[{"type": "text/plain", "data": "x"}],
         display_text="hello.txt",
         intent="new_chat",
+        reply_mode="fusion",
         extra={"runKind": "manual"},
     )
 
@@ -63,4 +64,5 @@ def test_chat_send_request_preserves_message_attachments_and_intent() -> None:
     assert params["attachments"] == [{"type": "text/plain", "data": "x"}]
     assert params["displayText"] == "hello.txt"
     assert params["intent"] == "new_chat"
+    assert params["replyMode"] == "fusion"
     assert params["runKind"] == "manual"

@@ -17,6 +17,7 @@ export interface UseChatSendOptions {
   messages: Ref<ChatMessage[]>
   sessionKey: Ref<string>
   busySendMode: Ref<BusySendMode>
+  replyMode: Ref<string>
   elevatedMode: Ref<string>
   pendingAttachments: Ref<Attachment[]>
   pendingSessionIntent: Ref<string | null>
@@ -94,6 +95,7 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: options.sessionKey.value }
     if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
+    if (options.replyMode.value) params.replyMode = options.replyMode.value
     const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
     if (elevated) params._source = { elevated }
     if (options.pendingSessionIntent.value) {
@@ -166,6 +168,7 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const params: ChatSendParams = { message: providerText, sessionKey: options.sessionKey.value }
     if (displayText && displayText !== providerText) params.displayText = displayText
+    if (options.replyMode.value) params.replyMode = options.replyMode.value
     const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
     if (elevated) params._source = { elevated }
 

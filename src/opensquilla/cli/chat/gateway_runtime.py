@@ -74,6 +74,7 @@ class GatewayClientLike(Protocol):
         message: str,
         attachments: list[dict] | None = None,
         elevated: str | None = None,
+        reply_mode: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
     async def resolve_approval(
@@ -107,6 +108,7 @@ class GatewayStreamResponse(Protocol):
         attachments: list[dict] | None = None,
         *,
         tui_output: ChatOutputHandle | None = None,
+        reply_mode: str | None = None,
     ) -> TurnResult: ...
 
 
@@ -137,6 +139,7 @@ async def run_gateway_chat(
     model: str | None,
     session_id: str | None,
     deps: GatewayRuntimeDependencies,
+    reply_mode: str | None = None,
 ) -> None:
     """Run gateway chat without owning a concrete terminal application."""
     from opensquilla.cli.gateway_client import GatewayClient, GatewayRPCError
@@ -206,12 +209,17 @@ async def run_gateway_chat(
             turn_session_key = session_context.session_key
             active_turn_session_key = turn_session_key
             try:
+                stream_kwargs: dict[str, Any] = {
+                    "tui_output": deps.get_tui_output(session_context.scope)
+                }
+                if reply_mode is not None:
+                    stream_kwargs["reply_mode"] = reply_mode
                 result = await deps.stream_response(
                     client,
                     turn_session_key,
                     user_input,
                     elevated_state,
-                    tui_output=deps.get_tui_output(session_context.scope),
+                    **stream_kwargs,
                 )
             except GatewayRPCError as exc:
                 deps.notify(GatewayRuntimeNotice(kind="error", message=str(exc)))

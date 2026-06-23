@@ -100,6 +100,51 @@ class _PostPublishToolLoopProvider:
         return []
 
 
+class _FusionPostPublishFinalProvider:
+    provider_name = "fusion_reply"
+    finalize_artifact_delivery_with_provider = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.model = "fusion:test"
+        self.tools_seen: list[bool] = []
+
+    def chat(self, messages: list[Message], tools=None, config=None) -> AsyncIterator[Any]:
+        self.calls += 1
+        self.tools_seen.append(bool(tools))
+        return self._stream(self.calls)
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number == 1:
+            yield ProviderText(text="drafting before publish. ")
+            yield ProviderToolUseStart(
+                tool_use_id="publish-1",
+                tool_name="publish_artifact",
+            )
+            yield ProviderToolUseEnd(
+                tool_use_id="publish-1",
+                tool_name="publish_artifact",
+                arguments={"path": "report.pptx"},
+            )
+            yield ProviderDone(
+                stop_reason="tool_use",
+                input_tokens=1,
+                output_tokens=1,
+                model="action-model",
+            )
+            return
+        yield ProviderText(text="FUSED final report")
+        yield ProviderDone(
+            stop_reason="end_turn",
+            input_tokens=2,
+            output_tokens=3,
+            model="fusion:test",
+        )
+
+    async def list_models(self) -> list[ModelInfo]:
+        return []
+
+
 class _SelectorClone:
     current_config = SimpleNamespace(model="test/model")
 
@@ -779,6 +824,66 @@ async def test_turn_runner_suppresses_tools_after_successful_publish_artifact(
         payload = json.loads(assistant.content)
         assert payload["artifacts"][0]["id"] == "art-published"
         assert "The generated file is ready" in payload["text"]
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_fusion_turn_runner_fuses_final_response_after_publish_artifact(
+    tmp_path,
+) -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    manager = SessionManager(storage)
+    session_key = "agent:main:webchat:fusion-artifact-final"
+    session = await manager.create(session_key)
+    provider = _FusionPostPublishFinalProvider()
+    registry, forbidden_calls = _publish_then_forbidden_tool_registry()
+    runner = TurnRunner(
+        provider_selector=_ProviderSelector(provider),
+        tool_registry=registry,
+        session_manager=manager,
+        config=GatewayConfig(
+            attachments=AttachmentsConfig(media_root=str(tmp_path / "media")),
+            squilla_router=SquillaRouterConfig(enabled=False),
+        ),
+    )
+    tool_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(tmp_path),
+    )
+
+    try:
+        events = [
+            event
+            async for event in runner.run(
+                "make ppt",
+                session_key,
+                tool_context=tool_context,
+                history_has_persisted_user=False,
+                no_memory_capture=True,
+            )
+        ]
+
+        done = next(event for event in events if isinstance(event, DoneEvent))
+        artifact_events = [event for event in events if isinstance(event, ArtifactEvent)]
+        tool_starts = [event for event in events if isinstance(event, ToolUseStartEvent)]
+
+        assert provider.calls == 2
+        assert provider.tools_seen == [True, False]
+        assert forbidden_calls == []
+        assert [event.tool_name for event in tool_starts] == ["publish_artifact"]
+        assert artifact_events[0].id == "art-published"
+        assert artifact_events[0].session_id == session.session_id
+        assert done.text == "FUSED final report"
+        assert done.model == "fusion:test"
+
+        transcript = await manager.get_transcript(session_key)
+        assistant = [entry for entry in transcript if entry.role == "assistant"][-1]
+        payload = json.loads(assistant.content)
+        assert payload["text"] == "FUSED final report"
+        assert payload["artifacts"][0]["id"] == "art-published"
     finally:
         await storage.close()
 

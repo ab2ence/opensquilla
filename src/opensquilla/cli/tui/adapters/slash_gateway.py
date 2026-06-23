@@ -94,6 +94,7 @@ class GatewayClientLike(Protocol):
         message: str,
         attachments: list[dict] | None = None,
         elevated: str | None = None,
+        reply_mode: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
     async def resolve_approval(
@@ -117,6 +118,7 @@ class GatewayStreamResponse(Protocol):
         attachments: list[dict] | None = None,
         *,
         tui_output: TuiOutputHandle | None = None,
+        reply_mode: str | None = None,
     ) -> TurnResult: ...
 
 
@@ -128,8 +130,9 @@ async def stream_response_gateway(
     attachments: list[dict] | None = None,
     *,
     tui_output: TuiOutputHandle | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
-    del client, session_key, message, elevated_state, attachments, tui_output
+    del client, session_key, message, elevated_state, attachments, tui_output, reply_mode
     raise RuntimeError("gateway streaming dependency was not configured")
 
 

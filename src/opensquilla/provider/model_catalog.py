@@ -108,6 +108,17 @@ class ModelCatalog:
         except UnknownProviderError:
             provider_spec = None
 
+        model_l = model_id.strip().lower()
+        if provider_id == "openrouter" and model_l in {
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-pro",
+        }:
+            return ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=True,
+                reasoning_format="openrouter",
+            )
+
         if provider_name == "openai" and "deepseek" in base_url.lower():
             return ModelCapabilities(
                 supports_reasoning=True, supports_tools=True, reasoning_format="deepseek"
@@ -120,7 +131,6 @@ class ModelCatalog:
                 supports_vision=info.supports_vision,
                 reasoning_format="openrouter",
             )
-        model_l = model_id.strip().lower()
         if (
             provider_name == "openai"
             and "api.openai.com" in base_url.lower()

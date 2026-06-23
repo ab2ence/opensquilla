@@ -190,6 +190,7 @@ class DoneEvent:
     vision_followup_gate_model: str | None = None
     vision_followup_needs_image: bool | None = None
     vision_followup_fallback: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def upstream_cost_usd(self) -> float:

@@ -139,6 +139,7 @@ async def stream_response_gateway(
     attachments: list[dict] | None = None,
     *,
     tui_output: TuiOutputHandle | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
     from opensquilla.cli.tui import turn_bridge as _turn_bridge
 
@@ -149,6 +150,7 @@ async def stream_response_gateway(
         elevated_state,
         attachments=attachments,
         tui_output=tui_output,
+        reply_mode=reply_mode,
         deps=_turn_stream_dependencies(),
     )
 
@@ -250,20 +252,26 @@ async def stream_response_turnrunner(
     *,
     tui_output: TuiOutputHandle | None = None,
     pending_input_provider: PendingInputProvider | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
     from opensquilla.cli.tui import turn_bridge as _turn_bridge
 
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "svc": svc,
+        "timeout": timeout,
+        "tui_output": tui_output,
+        "deps": _turn_stream_dependencies(),
+        "pending_input_provider": pending_input_provider,
+    }
+    if reply_mode is not None:
+        kwargs["reply_mode"] = reply_mode
     return await _turn_bridge.stream_response_turnrunner(
         turn_runner,
         session_key,
         tool_ctx,
         message,
-        model=model,
-        svc=svc,
-        timeout=timeout,
-        tui_output=tui_output,
-        deps=_turn_stream_dependencies(),
-        pending_input_provider=pending_input_provider,
+        **kwargs,
     )
 
 
@@ -278,20 +286,26 @@ async def handle_image_command_turnrunner(
     *,
     tui_output: TuiOutputHandle | None = None,
     pending_input_provider: PendingInputProvider | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
     from opensquilla.cli.tui import turn_bridge as _turn_bridge
 
+    kwargs = {
+        "model": model,
+        "svc": svc,
+        "timeout": timeout,
+        "tui_output": tui_output,
+        "deps": _turn_stream_dependencies(),
+        "pending_input_provider": pending_input_provider,
+    }
+    if reply_mode is not None:
+        kwargs["reply_mode"] = reply_mode
     return await _turn_bridge.handle_image_command_turnrunner(
         turn_runner,
         session_key,
         tool_ctx,
         command,
-        model=model,
-        svc=svc,
-        timeout=timeout,
-        tui_output=tui_output,
-        deps=_turn_stream_dependencies(),
-        pending_input_provider=pending_input_provider,
+        **kwargs,
     )
 
 
@@ -299,6 +313,7 @@ async def run_gateway_chat(
     *,
     model: str | None,
     session_id: str | None,
+    reply_mode: str | None = None,
     stream_response: _gateway_runtime.GatewayStreamResponse | None = None,
     handle_slash_command: _gateway_runtime.GatewayHandleSlashCommand | None = None,
     run_concurrent_repl: GatewayTerminalReplRunner | None = None,
@@ -349,10 +364,10 @@ async def run_gateway_chat(
     else:
         active_handle_slash_command = handle_slash_command
 
-    await _gateway_runtime.run_gateway_chat(
-        model=model,
-        session_id=session_id,
-        deps=_gateway_runtime.GatewayRuntimeDependencies(
+    runtime_kwargs: dict[str, Any] = {
+        "model": model,
+        "session_id": session_id,
+        "deps": _gateway_runtime.GatewayRuntimeDependencies(
             stream_response=active_stream_response,
             handle_slash_command=active_handle_slash_command,
             run_input_loop=_gateway_input_loop_for(repl_runner),
@@ -363,13 +378,21 @@ async def run_gateway_chat(
             ),
             notify=_gateway_runtime_notifier(active_console, active_error_panel),
         ),
-    )
+    }
+    if reply_mode is not None:
+        runtime_kwargs["reply_mode"] = reply_mode
+    await _gateway_runtime.run_gateway_chat(**runtime_kwargs)
 
 
-async def gateway_chat_runner(model: str | None, session_id: str | None) -> None:
+async def gateway_chat_runner(
+    model: str | None,
+    session_id: str | None,
+    reply_mode: str | None = None,
+) -> None:
     await run_gateway_chat(
         model=model,
         session_id=session_id,
+        reply_mode=reply_mode,
     )
 
 
@@ -377,6 +400,7 @@ async def run_standalone_chat(
     *,
     model: str | None,
     session_id: str | None,
+    reply_mode: str | None = None,
     stream_response: _standalone_runtime.StandaloneStreamResponse | None = None,
     image_command_handler: _standalone_runtime.StandaloneImageCommandHandler | None = None,
     run_concurrent_repl: _standalone_runtime.StandaloneRunConcurrentRepl | None = None,
@@ -408,13 +432,13 @@ async def run_standalone_chat(
             error_panel_factory=active_error_panel,
         )
 
-    await _standalone_runtime.run_standalone_chat(
-        model=model,
-        session_id=session_id,
-        workspace=workspace,
-        workspace_strict=workspace_strict,
-        timeout=timeout,
-        deps=_standalone_runtime.StandaloneRuntimeDependencies(
+    runtime_kwargs = {
+        "model": model,
+        "session_id": session_id,
+        "workspace": workspace,
+        "workspace_strict": workspace_strict,
+        "timeout": timeout,
+        "deps": _standalone_runtime.StandaloneRuntimeDependencies(
             stream_response=active_stream_response,
             image_command_handler=active_image_command_handler,
             run_concurrent_repl=repl_runner,
@@ -423,12 +447,16 @@ async def run_standalone_chat(
             get_tui_output=get_tui_output,
             output_console=active_console,
         ),
-    )
+    }
+    if reply_mode is not None:
+        runtime_kwargs["reply_mode"] = reply_mode
+    await _standalone_runtime.run_standalone_chat(**runtime_kwargs)
 
 
 async def standalone_chat_runner(
     model: str | None,
     session_id: str | None,
+    reply_mode: str | None = None,
     workspace: str | None = None,
     workspace_strict: bool | None = None,
     timeout: float | None = None,
@@ -436,6 +464,7 @@ async def standalone_chat_runner(
     await run_standalone_chat(
         model=model,
         session_id=session_id,
+        reply_mode=reply_mode,
         workspace=workspace,
         workspace_strict=workspace_strict,
         timeout=timeout,

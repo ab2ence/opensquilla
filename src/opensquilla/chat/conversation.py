@@ -14,6 +14,7 @@ class ChatSendRequest:
     display_text: str | None = None
     intent: str | None = None
     elevated: str | None = None
+    reply_mode: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -32,5 +33,7 @@ def sessions_send_params(
         params["displayText"] = request.display_text
     if request.intent is not None:
         params["intent"] = request.intent
+    if request.reply_mode is not None:
+        params["replyMode"] = request.reply_mode
     params.update(request.extra)
     return params

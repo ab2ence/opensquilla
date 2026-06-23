@@ -76,6 +76,7 @@
             <span v-if="message.meta.model" class="msg-meta__model">{{ message.meta.modelShort }}</span>
             <span v-if="message.meta.costUsd" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
             <span v-if="message.meta.hasSaved" class="savings-indicator">{{ message.meta.savedLabel }}</span>
+            <span v-if="message.meta.fusionContributionLabel" class="fusion-indicator">{{ message.meta.fusionContributionLabel }}</span>
             <span
               v-if="hasMetaDetails"
               ref="metaMoreRef"
@@ -114,6 +115,17 @@
                 <div v-if="message.meta.reasoningTokens" class="msg-meta-popover__row">
                   <span class="msg-meta-popover__label">think</span>
                   <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
+                </div>
+                <div v-if="message.meta.fusionContributions?.length" class="msg-meta-popover__fusion">
+                  <div class="msg-meta-popover__fusion-title">final output contribution</div>
+                  <div
+                    v-for="member in message.meta.fusionContributions"
+                    :key="member.memberId"
+                    class="msg-meta-popover__row"
+                  >
+                    <span class="msg-meta-popover__label" :title="member.model">{{ member.label }}</span>
+                    <span class="msg-meta-popover__value">{{ Math.round(member.share * 100) }}%</span>
+                  </div>
                 </div>
               </div>
             </span>
@@ -226,7 +238,7 @@ const showDoneBlock = computed(() =>
 const hasMetaDetails = computed(() => {
   const meta = props.message.meta
   if (!meta) return false
-  return meta.hasTokens || meta.cachedTokens > 0 || meta.reasoningTokens > 0
+  return meta.hasTokens || meta.cachedTokens > 0 || meta.reasoningTokens > 0 || !!meta.fusionContributions?.length
 })
 
 const metaDetailsId = computed(
@@ -571,12 +583,12 @@ function onMessageClick(event: MouseEvent) {
   color: color-mix(in srgb, var(--text-muted) 56%, transparent);
 }
 
-.msg-ai-meta > span:not(.savings-indicator):not(.msg-meta__more) {
+.msg-ai-meta > span:not(.savings-indicator):not(.fusion-indicator):not(.msg-meta__more) {
   opacity: 0.72;
   transition: opacity 0.16s ease, color 0.16s ease;
 }
 
-.msg-ai:hover .msg-ai-meta > span:not(.savings-indicator):not(.msg-meta__more) {
+.msg-ai:hover .msg-ai-meta > span:not(.savings-indicator):not(.fusion-indicator):not(.msg-meta__more) {
   opacity: 0.88;
 }
 
@@ -656,6 +668,38 @@ function onMessageClick(event: MouseEvent) {
   color: var(--text);
 }
 
+.msg-meta-popover__fusion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-top: 0.375rem;
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.msg-meta-popover__fusion-title {
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.fusion-indicator {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  max-width: 16rem;
+  padding: 0 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
+  color: var(--text-muted);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .savings-indicator {
   position: relative;
   display: inline-flex;
@@ -724,9 +768,14 @@ function onMessageClick(event: MouseEvent) {
   }
 
   .msg-meta__cost,
+  .fusion-indicator,
   .savings-indicator,
   .msg-meta__more {
     flex-shrink: 0;
+  }
+
+  .fusion-indicator {
+    max-width: 9rem;
   }
 }
 

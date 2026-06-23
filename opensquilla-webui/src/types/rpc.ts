@@ -208,6 +208,7 @@ export interface ChatSendParams {
   _source?: { elevated?: string }
   intent?: string
   displayText?: string
+  replyMode?: string
   attachments?: ChatSendAttachmentPayload[]
   [key: string]: unknown
 }

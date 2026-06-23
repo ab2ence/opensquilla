@@ -312,6 +312,66 @@ async def test_turn_usage_persists_vision_followup_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_usage_persists_compact_fusion_summary_only() -> None:
+    stage, recs = _make_stage()
+    done = DoneEvent(
+        text="ok",
+        input_tokens=5,
+        output_tokens=3,
+        metadata={
+            "fusion_summary": {
+                "trace_id": "trace-1",
+                "algorithm": "specem_weighted_pairwise",
+                "rounds_completed": 1,
+                "member_count": 2,
+                "output_contribution": {
+                    "basis": "selected_output_chars",
+                    "members": [
+                        {
+                            "member_id": "kimi",
+                            "provider": "moonshot",
+                            "model": "kimi-2.7-code",
+                            "selected_segments": 1,
+                            "selected_chars": 12,
+                            "share": 1.0,
+                            "raw_candidate_text": "must not persist",
+                        },
+                        {
+                            "member_id": "deepseek",
+                            "provider": "deepseek",
+                            "model": "deepseek-v4-flash",
+                            "selected_segments": 0,
+                            "selected_chars": 0,
+                            "share": 0.0,
+                        },
+                    ],
+                },
+                "verifier_results": [{"raw_response": "must not persist"}],
+            }
+        },
+    )
+    inp = _make_input(final_text_parts=["ok"], done_event=done)
+
+    await stage.run(inp)
+
+    usage = recs["transcript_append"].calls[0]["turn_usage"]
+    summary = usage["fusion_summary"]
+    assert summary["trace_id"] == "trace-1"
+    assert summary["rounds_completed"] == 1
+    members = summary["output_contribution"]["members"]
+    assert members[0] == {
+        "member_id": "kimi",
+        "provider": "moonshot",
+        "model": "kimi-2.7-code",
+        "selected_segments": 1,
+        "selected_chars": 12,
+        "share": 1.0,
+    }
+    assert "verifier_results" not in summary
+    assert "raw_candidate_text" not in members[0]
+
+
+@pytest.mark.asyncio
 async def test_disclosed_subagent_outcome_persists_once_and_captures_same_text() -> None:
     disclosure = "Subagents: 1/2 succeeded; failures: child failed."
     final_text = f"Parent synthesis.\n\n{disclosure}"

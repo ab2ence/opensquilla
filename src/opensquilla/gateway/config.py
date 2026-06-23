@@ -263,6 +263,77 @@ class LlmProviderConfig(BaseSettings):
         return self
 
 
+class ReplyConfig(BaseModel):
+    """Per-turn reply mode defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_mode: str = "router"
+
+    @field_validator("default_mode")
+    @classmethod
+    def _validate_default_mode(cls, value: str) -> str:
+        from opensquilla.reply_modes import normalize_reply_mode
+
+        return normalize_reply_mode(value, default="router")
+
+
+class FusionReplyModelConfig(BaseModel):
+    """One base model in the Fusion Reply pool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    id: str = ""
+    provider: str = ""
+    api_key: str = ""
+    api_key_env: str = ""
+    base_url: str = ""
+    proxy: str = ""
+    provider_routing: dict[str, str] = Field(default_factory=dict)
+    weight: float = Field(default=1.0, gt=0)
+
+
+class FusionTraceConfig(BaseModel):
+    """Trace controls for Fusion Reply observability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    level: str = "full"
+    write_jsonl: bool = True
+    log_dir: str = ""
+    include_prompts: bool = True
+    include_candidate_text: bool = True
+    include_verifier_text: bool = True
+    expose_summary: bool = True
+
+
+class FusionReplyConfig(BaseModel):
+    """Configuration for OpenSquilla-native model fusion replies."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    action_model: str = ""
+    action_provider: str = ""
+    action_api_key: str = ""
+    action_api_key_env: str = ""
+    action_base_url: str = ""
+    action_proxy: str = ""
+    action_provider_routing: dict[str, str] = Field(default_factory=dict)
+    models: list[FusionReplyModelConfig] = Field(default_factory=list)
+    max_rounds: int = Field(default=4, ge=1, le=8)
+    min_rounds: int = Field(default=2, ge=1, le=8)
+    step_max_tokens: int = Field(default=1024, ge=1)
+    judge_max_tokens: int = Field(default=512, ge=1)
+    temperature: float | None = Field(default=0.7, ge=0.0, le=2.0)
+    judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
+    feedback_alpha: float = Field(default=1.0, ge=0.0)
+    adaptive_segments: bool = True
+    trace: FusionTraceConfig = Field(default_factory=FusionTraceConfig)
+
+
 # Module-level dedupe state for the legacy ``enabled`` deprecation warning.
 # A plain ``bool`` flag guarded by a ``Lock`` makes the check-and-set atomic
 # across concurrent constructors; ``threading.Event`` is *not* atomic for
@@ -1550,6 +1621,8 @@ class GatewayConfig(BaseSettings):
     task_runtime: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     llm: LlmProviderConfig = Field(default_factory=LlmProviderConfig)
+    reply: ReplyConfig = Field(default_factory=ReplyConfig)
+    fusion_reply: FusionReplyConfig = Field(default_factory=FusionReplyConfig)
     prompt_cache: PromptCacheConfig = Field(default_factory=PromptCacheConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     prompt: PromptConfig = Field(default_factory=PromptConfig)

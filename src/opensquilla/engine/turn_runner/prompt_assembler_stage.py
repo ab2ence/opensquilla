@@ -74,6 +74,7 @@ class RunPipelineRequest:
     tool_context: ToolContext | None = None
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
+    reply_mode: str = "router"
 
 # ---------------------------------------------------------------------------
 # Ports — narrow Protocols so the stage is unit-testable without the full
@@ -238,6 +239,7 @@ class PromptAssemblerStageInput:
     ingress_pipeline_steps: list[PipelineStepRecord] | None = None
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
+    reply_mode: str = "router"
 
 @dataclass(frozen=True)
 class PromptAssemblerStageOutput:
@@ -429,8 +431,10 @@ class PromptAssemblerStage:
             tool_context=inp.effective_tool_context,
             normalization_metadata=inp.normalization_metadata,
             input_provenance=inp.input_provenance,
+            reply_mode=inp.reply_mode,
         )
         turn, provider = await self._pipeline_executor.run_pipeline(request)
+        effective_reply_mode = str(turn.metadata.get("reply_mode") or inp.reply_mode or "router")
 
         # 4. Merge prompt + tool metadata
         turn.metadata.update(prompt_metadata)
@@ -448,7 +452,7 @@ class PromptAssemblerStage:
 
         # 6. Effective runtime message + selector override / fallback wrap
         effective_runtime_message = getattr(turn, "message", inp.runtime_message)
-        if inp.model and inp.cloned_selector is not None:
+        if effective_reply_mode != "fusion" and inp.model and inp.cloned_selector is not None:
             router_fallback_chain = (
                 turn.metadata.get("router_fallback_chain")
                 if turn.metadata.get("routing_applied") is True
@@ -467,7 +471,7 @@ class PromptAssemblerStage:
             else:
                 inp.cloned_selector.override_model(inp.model)
             provider = inp.cloned_selector.resolve()
-        if inp.cloned_selector is not None:
+        if effective_reply_mode != "fusion" and inp.cloned_selector is not None:
             # Local import to avoid pulling _SelectorFallbackProvider name
             # into the stage's module-top namespace.
             from opensquilla.engine.runtime import _SelectorFallbackProvider
@@ -505,7 +509,10 @@ class PromptAssemblerStage:
                 )
             except Exception:  # noqa: BLE001 - defensive
                 selector_model = ""
-        resolved_model = inp.model or turn.model or selector_model
+        if effective_reply_mode == "fusion":
+            resolved_model = turn.model or inp.model or selector_model
+        else:
+            resolved_model = inp.model or turn.model or selector_model
         provider_name = (
             getattr(provider, "provider_name", "") or type(provider).__name__
         )

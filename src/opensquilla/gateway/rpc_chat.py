@@ -402,6 +402,15 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 attachments=attachments if isinstance(attachments, list) else [],
                 display_text=params.get("displayText") if "displayText" in params else None,
                 intent=cast(str, intent) if intent is not None else None,
+                reply_mode=(
+                    cast(str, params.get("replyMode"))
+                    if params.get("replyMode") is not None
+                    else (
+                        cast(str, params.get("reply_mode"))
+                        if params.get("reply_mode") is not None
+                        else None
+                    )
+                ),
                 extra=extra,
             ),
             chat_source_metadata(

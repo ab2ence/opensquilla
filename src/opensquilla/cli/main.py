@@ -837,6 +837,16 @@ def agent(
             "Defaults to OPENSQUILLA_AGENT_PERMISSIONS, then permissions.default_mode."
         ),
     ),
+    reply_mode: str = typer.Option(
+        "",
+        "--reply-mode",
+        help="Reply mode: router, direct, or fusion.",
+    ),
+    fusion: bool = typer.Option(
+        False,
+        "--fusion",
+        help="Shortcut for --reply-mode fusion.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Run a single agent turn for automation."""
@@ -867,6 +877,8 @@ def agent(
         clean_room=clean_room,
         stateless_keep_project_rules=stateless_keep_project_rules,
         permissions=permissions,
+        reply_mode=reply_mode,
+        fusion=fusion,
         json_output=json_output,
     )
 
@@ -875,6 +887,16 @@ def agent(
 def chat(
     model: str = typer.Option("", "--model", "-m", help="Model override"),
     session_id: str = typer.Option("", "--session", "-s", help="Resume session"),
+    reply_mode: str = typer.Option(
+        "",
+        "--reply-mode",
+        help="Reply mode: router, direct, or fusion.",
+    ),
+    fusion: bool = typer.Option(
+        False,
+        "--fusion",
+        help="Shortcut for --reply-mode fusion.",
+    ),
     standalone: bool = typer.Option(False, "--standalone", help="Direct Agent without gateway"),
     workspace: str = typer.Option("", "--workspace", help="Workspace root for standalone tools"),
     workspace_strict: bool | None = typer.Option(
@@ -892,6 +914,8 @@ def chat(
     run_chat(
         model=model,
         session_id=session_id,
+        reply_mode="fusion" if fusion else reply_mode,
+        fusion=False,
         standalone=standalone,
         workspace=workspace,
         workspace_strict=workspace_strict,

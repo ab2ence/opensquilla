@@ -278,6 +278,8 @@ class _TextDeltaHandler:
         event: TextDeltaEvent,
         state: _StreamState,
     ) -> TextDeltaEvent:
+        if event.presentation == "intermediate":
+            return event
         cleaned_delta = state.protocol_text_guard.push(event.text)
         if cleaned_delta:
             state.final_text_parts.append(cleaned_delta)

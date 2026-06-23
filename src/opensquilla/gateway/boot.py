@@ -880,6 +880,7 @@ def build_task_runtime_run_kwargs(
         "run_kind": run.run_kind,
         "no_memory_capture": run.no_memory_capture,
         "fresh_user_session": bool(getattr(run, "fresh_user_session", False)),
+        "reply_mode": getattr(run, "reply_mode", None),
         "ingress_pipeline_steps": ingress_steps,
     }
     if run.semantic_message is not None:

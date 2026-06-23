@@ -217,6 +217,7 @@ def _make_input(
     fresh_user_session=False,
     ingress_pipeline_steps=None,
     input_provenance=None,
+    reply_mode="router",
 ):
     return PromptAssemblerStageInput(
         runtime_message=runtime_message,
@@ -238,6 +239,7 @@ def _make_input(
         fresh_user_session=fresh_user_session,
         ingress_pipeline_steps=ingress_pipeline_steps,
         input_provenance=input_provenance,
+        reply_mode=reply_mode,
     )
 
 
@@ -376,6 +378,28 @@ async def test_case04_squilla_router_fires_overrides_model() -> None:
     # explicit model wins
     assert out.output.resolved_model == "claude-haiku-4.5"
     assert out.output.squilla_router_tier == "premium"
+
+
+@pytest.mark.asyncio
+async def test_fusion_reply_metadata_skips_selector_override() -> None:
+    selector = _StubSelector("fusion-selector", current_model="claude-opus-4.5")
+    fusion_provider = _StubProvider("fusion")
+    executor = _RecordingPipelineExecutor(
+        turn=_make_turn(metadata={"reply_mode": "fusion"}, model="fusion:a+b"),
+        provider=fusion_provider,
+    )
+    stage = _make_stage(executor=executor)
+    inp = _make_input(
+        cloned_selector=selector,
+        model="claude-haiku-4.5",
+        reply_mode="",
+    )
+
+    out = await stage.run(inp)
+
+    assert selector.overridden_models == []
+    assert out.output.provider is fusion_provider
+    assert out.output.resolved_model == "fusion:a+b"
 
 
 @pytest.mark.asyncio

@@ -217,6 +217,7 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             "tool_context": request.tool_context,
             "normalization_metadata": request.normalization_metadata,
             "input_provenance": request.input_provenance,
+            "reply_mode": request.reply_mode,
         }
         accepted_kwargs = {
             name: value

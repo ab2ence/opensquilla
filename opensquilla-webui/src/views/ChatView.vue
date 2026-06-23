@@ -312,6 +312,7 @@
       v-model="inputText"
       :attachments="pendingAttachments"
       :busy-send-mode="busySendMode"
+      :reply-mode="replyMode"
       :has-send-content="hasSendContent"
       :is-streaming="isStreaming"
       :is-new-landing="isNewChatLanding"
@@ -330,6 +331,7 @@
       @keydown="onTextareaKeydown"
       @remove-attachment="removeAttachment"
       @set-busy-send-mode="busySendMode = $event"
+      @set-reply-mode="replyMode = $event"
       @set-elevated-mode="setComposerElevatedMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
@@ -502,6 +504,7 @@ const composerRef = ref<ChatComposerHandle | null>(null)
 
 const sessionKey = ref('')
 const inputText = ref('')
+const replyMode = ref('')
 const aborted = ref(false)
 const autoScroll = ref(true)
 const composing = ref(false)
@@ -743,6 +746,7 @@ const { renderedMessages, routerDecisionCells } = chatRenderedMessages
  */
 const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
   if (!isStreaming.value || !routerEnabled.value || !routerVisualEffectsEnabled.value) return null
+  if (replyMode.value === 'direct' || replyMode.value === 'fusion') return null
   const rendered = renderedMessages.value
   for (let i = rendered.length - 1; i >= 0; i--) {
     const msg = rendered[i]
@@ -916,6 +920,7 @@ const chatSend = useChatSend({
   messages,
   sessionKey,
   busySendMode,
+  replyMode,
   elevatedMode,
   pendingAttachments,
   pendingSessionIntent,

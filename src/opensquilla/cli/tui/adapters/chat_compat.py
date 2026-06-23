@@ -355,15 +355,21 @@ async def stream_response_gateway(
     attachments: list[dict] | None = None,
     *,
     tui_output: TuiOutputHandle | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
+    kwargs: dict[str, Any] = {
+        "attachments": attachments,
+        "tui_output": tui_output,
+        "deps": default_turn_stream_dependencies(),
+    }
+    if reply_mode is not None:
+        kwargs["reply_mode"] = reply_mode
     return await _turn_bridge.stream_response_gateway(
         client,
         session_key,
         message,
         elevated_state,
-        attachments=attachments,
-        tui_output=tui_output,
-        deps=default_turn_stream_dependencies(),
+        **kwargs,
     )
 
 
@@ -382,18 +388,24 @@ async def stream_response_turnrunner(
     *,
     tui_output: TuiOutputHandle | None = None,
     pending_input_provider: PendingInputProvider | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
+    kwargs = {
+        "model": model,
+        "svc": svc,
+        "timeout": timeout,
+        "tui_output": tui_output,
+        "deps": default_turn_stream_dependencies(),
+        "pending_input_provider": pending_input_provider,
+    }
+    if reply_mode is not None:
+        kwargs["reply_mode"] = reply_mode
     return await _turn_bridge.stream_response_turnrunner(
         turn_runner,
         session_key,
         tool_ctx,
         message,
-        model=model,
-        svc=svc,
-        timeout=timeout,
-        tui_output=tui_output,
-        deps=default_turn_stream_dependencies(),
-        pending_input_provider=pending_input_provider,
+        **kwargs,
     )
 
 
@@ -408,16 +420,22 @@ async def handle_image_command_turnrunner(
     *,
     tui_output: TuiOutputHandle | None = None,
     pending_input_provider: PendingInputProvider | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
+    kwargs = {
+        "model": model,
+        "svc": svc,
+        "timeout": timeout,
+        "tui_output": tui_output,
+        "deps": default_turn_stream_dependencies(),
+        "pending_input_provider": pending_input_provider,
+    }
+    if reply_mode is not None:
+        kwargs["reply_mode"] = reply_mode
     return await _turn_bridge.handle_image_command_turnrunner(
         turn_runner,
         session_key,
         tool_ctx,
         command,
-        model=model,
-        svc=svc,
-        timeout=timeout,
-        tui_output=tui_output,
-        deps=default_turn_stream_dependencies(),
-        pending_input_provider=pending_input_provider,
+        **kwargs,
     )

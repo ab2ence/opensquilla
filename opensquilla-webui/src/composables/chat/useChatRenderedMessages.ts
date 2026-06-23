@@ -9,6 +9,7 @@ import type {
   ChatTimelineSegment,
   ChatToolCall,
   ChatToolCallRenderItem,
+  FusionContributionMember,
   RawToolCallPayload,
 } from '@/types/chat'
 import {
@@ -175,6 +176,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     const hasTier = !!(u.routed_tier && u.routing_source && u.routing_source !== 'none')
     const turnSavedPct = typeof u.total_savings_pct === 'number' && u.total_savings_pct > 0 ? u.total_savings_pct : 0
     const hasSaved = hasTier && turnSavedPct > 0 && !u.__savings_ui_suppressed
+    const fusionContributions = fusionContributionMembers(u.fusion_summary)
     return {
       model,
       modelShort: model.includes('/') ? (model.split('/').pop() || model) : model,
@@ -187,7 +189,48 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       hasSaved,
       turnSavedPct,
       savedLabel: turnSavedPct > 0 ? `Saved ~${Math.round(turnSavedPct)}%` : 'Cost optimized',
+      fusionContributions,
+      fusionContributionLabel: fusionContributionLabel(fusionContributions),
     }
+  }
+
+  function fusionContributionMembers(raw: unknown): FusionContributionMember[] | undefined {
+    if (!raw || typeof raw !== 'object') return undefined
+    const summary = raw as Record<string, unknown>
+    const outputContribution = summary.output_contribution
+    if (!outputContribution || typeof outputContribution !== 'object') return undefined
+    const members = (outputContribution as Record<string, unknown>).members
+    if (!Array.isArray(members)) return undefined
+    const parsed = members
+      .map(item => {
+        if (!item || typeof item !== 'object') return null
+        const source = item as Record<string, unknown>
+        const memberId = String(source.member_id || source.memberId || '')
+        const provider = String(source.provider || '')
+        const model = String(source.model || memberId)
+        const label = shortModelName(model || memberId) || memberId || 'model'
+        const share = Math.max(0, Math.min(1, Number(source.share || 0)))
+        return {
+          memberId,
+          provider,
+          model,
+          label,
+          selectedSegments: Number(source.selected_segments || source.selectedSegments || 0),
+          selectedChars: Number(source.selected_chars || source.selectedChars || 0),
+          share,
+        }
+      })
+      .filter((item): item is FusionContributionMember => !!item && !!item.memberId)
+    return parsed.length ? parsed : undefined
+  }
+
+  function fusionContributionLabel(members: FusionContributionMember[] | undefined): string | undefined {
+    if (!members?.length) return undefined
+    const leader = members[0]
+    const pct = Math.round(leader.share * 100)
+    return members.length === 1
+      ? `Fusion ${pct}%`
+      : `Fusion ${leader.label} ${pct}%`
   }
 
   function routerDecisionCells(decision: NormalizedRouterDecision): ChatRouterCell[] {

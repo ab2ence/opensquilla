@@ -2,10 +2,24 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
+const gatewayTarget = process.env.OPENSQUILLA_GATEWAY_DEV_TARGET || 'http://127.0.0.1:18791'
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [vue()],
   base: './',
+  server: {
+    proxy: {
+      '/ws': {
+        target: gatewayTarget,
+        ws: true,
+      },
+      '/artifacts': gatewayTarget,
+      '/attachments': gatewayTarget,
+      '/uploads': gatewayTarget,
+      '/api': gatewayTarget,
+    },
+  },
   build: {
     outDir: resolve(__dirname, '../src/opensquilla/gateway/static/dist'),
     emptyOutDir: true,

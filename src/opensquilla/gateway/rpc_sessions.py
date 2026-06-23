@@ -977,6 +977,21 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
     message_text: str = params["message"]
     source_hint = _normalize_session_send_source_hint(params)
+    from opensquilla.reply_modes import normalize_reply_mode
+
+    configured_reply_mode = getattr(getattr(ctx.config, "reply", None), "default_mode", "router")
+    raw_reply_mode = (
+        params.get("replyMode")
+        if params.get("replyMode") is not None
+        else params.get("reply_mode")
+    )
+    if raw_reply_mode is None and isinstance(source_hint, dict):
+        raw_reply_mode = (
+            source_hint.get("replyMode")
+            if source_hint.get("replyMode") is not None
+            else source_hint.get("reply_mode")
+        )
+    reply_mode = normalize_reply_mode(raw_reply_mode, default=configured_reply_mode)
     incoming_attachments = params.get("attachments", [])
     normalized_input = normalize_incoming_text(
         message_text,
@@ -1123,6 +1138,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     elevated_hint = _trusted_elevated_hint(ctx, source_hint)
     if elevated_hint is not None:
         route_envelope.metadata["elevated"] = elevated_hint
+    route_envelope.metadata["reply_mode"] = reply_mode
 
     capture_controls = _normalize_memory_capture_controls(params)
     input_provenance = capture_controls["input_provenance"]
@@ -1232,6 +1248,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 semantic_message=semantic_message_text,
                 persisted_user_message_id=getattr(persisted_entry, "message_id", None),
                 fresh_user_session=fresh_user_session,
+                reply_mode=reply_mode,
             )
         except Exception as exc:
             # Ensure the uuid eviction does NOT fire on this
@@ -1370,6 +1387,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 no_memory_capture=capture_controls["no_memory_capture"],
                 semantic_message=semantic_message_text,
                 fresh_user_session=fresh_user_session,
+                reply_mode=reply_mode,
             )
             stream_idle_timeout = _optional_positive_timeout(
                 ctx.config, "agent_stream_idle_timeout_seconds", 600.0

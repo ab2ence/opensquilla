@@ -155,6 +155,7 @@ def launch_chat(
     gateway_runner: ChatRunner | None,
     output_console: Any | None = None,
     input_stream: Any | None = None,
+    reply_mode: str = "",
 ) -> None:
     active_console = console if output_console is None else output_console
     validate_tui_backend_or_exit()
@@ -179,15 +180,16 @@ def launch_chat(
             active_console.print(f"[dim]Model: {model}[/dim]")
         if session_id:
             active_console.print(f"[dim]Session: {session_id}[/dim]")
-        asyncio.run(
-            standalone_runner(
-                model=model or None,
-                session_id=session_id or None,
-                workspace=workspace or None,
-                workspace_strict=workspace_strict,
-                timeout=timeout,
-            )
-        )
+        kwargs = {
+            "model": model or None,
+            "session_id": session_id or None,
+            "workspace": workspace or None,
+            "workspace_strict": workspace_strict,
+            "timeout": timeout,
+        }
+        if reply_mode:
+            kwargs["reply_mode"] = reply_mode
+        asyncio.run(standalone_runner(**kwargs))
         return
 
     if gateway_runner is None:
@@ -199,12 +201,10 @@ def launch_chat(
             "gateway runtime; use /file to upload from this CLI machine for "
             "remote gateways."
         )
-    asyncio.run(
-        gateway_runner(
-            model=model or None,
-            session_id=session_id or None,
-        )
-    )
+    kwargs = {"model": model or None, "session_id": session_id or None}
+    if reply_mode:
+        kwargs["reply_mode"] = reply_mode
+    asyncio.run(gateway_runner(**kwargs))
 
 
 def launch_chat_command(
@@ -238,13 +238,16 @@ def launch_chat_command(
 
         gateway_runner = runtime_bridge.gateway_chat_runner
 
-    active_launch_chat(
-        model=request.model,
-        session_id=request.session_id,
-        standalone=request.standalone,
-        workspace=request.workspace,
-        workspace_strict=request.workspace_strict,
-        timeout=request.timeout,
-        standalone_runner=standalone_runner,
-        gateway_runner=gateway_runner,
-    )
+    kwargs = {
+        "model": request.model,
+        "session_id": request.session_id,
+        "standalone": request.standalone,
+        "workspace": request.workspace,
+        "workspace_strict": request.workspace_strict,
+        "timeout": request.timeout,
+        "standalone_runner": standalone_runner,
+        "gateway_runner": gateway_runner,
+    }
+    if request.reply_mode:
+        kwargs["reply_mode"] = request.reply_mode
+    active_launch_chat(**kwargs)

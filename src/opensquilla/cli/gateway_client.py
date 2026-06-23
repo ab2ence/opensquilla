@@ -436,6 +436,7 @@ class GatewayClient:
         message: str,
         attachments: list[dict] | None = None,
         elevated: str | None = None,
+        reply_mode: str | None = None,
     ) -> AsyncIterator[dict]:
         """Send message and yield session events until done.
 
@@ -461,6 +462,8 @@ class GatewayClient:
         }
         if elevated in ("on", "bypass", "full"):
             params["_source"]["elevated"] = elevated
+        if reply_mode:
+            params["replyMode"] = reply_mode
 
         # Send the message (accepted immediately; agent runs async)
         await self._call("sessions.send", params)

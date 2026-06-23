@@ -55,6 +55,7 @@ class GatewayStreamingClient(Protocol):
         message: str,
         attachments: list[dict] | None = None,
         elevated: str | None = None,
+        reply_mode: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
     async def resolve_approval(
@@ -700,10 +701,13 @@ async def dispatch_gateway_stream(
     *,
     tui_output: ChatOutputHandle | None = None,
     deps: TurnStreamDependencies | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
     kwargs: dict[str, Any] = {"tui_output": tui_output}
     if deps is not None:
         kwargs["deps"] = deps
+    if reply_mode is not None:
+        kwargs["reply_mode"] = reply_mode
     return await stream_response_gateway(
         client, session_key, message, elevated_state, attachments=attachments, **kwargs
     )
@@ -718,6 +722,7 @@ async def stream_response_gateway(
     *,
     tui_output: ChatOutputHandle | None = None,
     deps: TurnStreamDependencies | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
     """Stream a response from the gateway into a renderer."""
     stream_deps = _resolve_deps(deps)
@@ -746,8 +751,16 @@ async def stream_response_gateway(
         )
         try:
             try:
+                send_kwargs: dict[str, Any] = {
+                    "attachments": attachments,
+                    "elevated": elevated,
+                }
+                if reply_mode is not None:
+                    send_kwargs["reply_mode"] = reply_mode
                 async for event in client.send_message(
-                    session_key, message, attachments=attachments, elevated=elevated
+                    session_key,
+                    message,
+                    **send_kwargs,
                 ):
                     event_name = event.get("event", "")
                     if event_name == "session.event.text_delta":
@@ -1017,6 +1030,7 @@ async def stream_response_turnrunner(
     tui_output: ChatOutputHandle | None = None,
     deps: TurnStreamDependencies | None = None,
     pending_input_provider: PendingInputProvider | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
     """Stream a TurnRunner response into a renderer."""
     from opensquilla.engine.runtime import TurnRunner
@@ -1087,6 +1101,7 @@ async def stream_response_turnrunner(
                     session_key,
                     tool_context=tool_ctx,
                     model=model,
+                    reply_mode=reply_mode,
                     timeout=timeout,
                     pending_input_provider=pending_input_provider,
                 )
@@ -1348,6 +1363,7 @@ async def handle_image_command_turnrunner(
     tui_output: ChatOutputHandle | None = None,
     deps: TurnStreamDependencies | None = None,
     pending_input_provider: PendingInputProvider | None = None,
+    reply_mode: str | None = None,
 ) -> TurnResult:
     """Handle /image <path> [prompt] via TurnRunner attachments."""
     from opensquilla.engine.runtime import TurnRunner
@@ -1397,6 +1413,7 @@ async def handle_image_command_turnrunner(
                     session_key,
                     tool_context=tool_ctx,
                     model=model,
+                    reply_mode=reply_mode,
                     attachments=attachments,
                     timeout=timeout,
                     pending_input_provider=pending_input_provider,

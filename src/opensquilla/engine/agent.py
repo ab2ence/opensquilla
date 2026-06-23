@@ -554,7 +554,25 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
         thinking_level=None,
         provider_request_max_chars=chat_cfg.provider_request_max_chars,
         tool_choice=chat_cfg.tool_choice,
+        metadata=_fusion_trace_chat_metadata(chat_cfg.metadata),
     )
+
+
+def _fusion_trace_chat_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    output: dict[str, Any] = {}
+    for key in (
+        "fusion_trace_session_key",
+        "fusion_trace_agent_id",
+        "reply_mode",
+        "session_key",
+        "agent_id",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, str | int | float | bool) or value is None:
+            output[key] = value
+    return output
 
 
 def _strip_historical_image_blocks(
@@ -1899,6 +1917,7 @@ class Agent:
             ),
             provider_request_max_chars=self._provider_request_proof_max_chars(),
             tool_choice=None,
+            metadata=_fusion_trace_chat_metadata(self.config.metadata),
         )
         _thinking_fallback_done = False
 
@@ -1914,6 +1933,7 @@ class Agent:
         total_cached_tokens = 0
         total_cache_write_tokens = 0
         total_billed_cost = 0.0
+        provider_done_metadata: dict[str, Any] = {}
         usage_turn_baseline = (
             self._usage_tracker.session_checkpoint(self._session_key)
             if self._usage_tracker and self._session_key
@@ -2058,6 +2078,11 @@ class Agent:
                 "artifact_final_response_synthesized",
                 reason="publish_artifact_completed",
                 artifact_count=len(artifact_delivery_final_response_artifacts),
+            )
+
+        def _artifact_delivery_final_response_uses_provider() -> bool:
+            return bool(
+                getattr(self.provider, "finalize_artifact_delivery_with_provider", False)
             )
 
         try:
@@ -2446,6 +2471,8 @@ class Agent:
                                 total_reasoning_tokens += raw_ev.reasoning_tokens
                                 total_cached_tokens += raw_ev.cached_tokens
                                 total_cache_write_tokens += raw_ev.cache_write_tokens
+                                if raw_ev.metadata:
+                                    provider_done_metadata.update(raw_ev.metadata)
                                 if raw_ev.model:
                                     last_actual_model = raw_ev.model
                                 # Usage/cost accounting is billed-attempt based: discarded
@@ -3276,6 +3303,7 @@ class Agent:
                         ),
                         provider_request_max_chars=(self._provider_request_proof_max_chars()),
                         tool_choice=chat_cfg.tool_choice,
+                        metadata=_fusion_trace_chat_metadata(self.config.metadata),
                     )
 
                 assembled_text = "".join(assistant_text_parts)
@@ -3351,6 +3379,8 @@ class Agent:
                 # No tool calls → we're done
                 if not tool_calls:
                     max_iterations_finalization_pending = False
+                    if artifact_delivery_final_response_pending:
+                        artifact_delivery_final_response_pending = False
                     break
                 tool_calls = [self._coerce_meta_tool_call(tc) for tc in tool_calls]
                 tool_calls = self._force_matched_meta_invoke_tool_calls(tool_calls)
@@ -3787,6 +3817,20 @@ class Agent:
                         tool_use_ids=sorted(preflight_tool_results),
                     )
                 if terminal_artifacts:
+                    if _artifact_delivery_final_response_uses_provider():
+                        prior_text_chars = len("".join(final_text_parts))
+                        final_text_parts.clear()
+                        final_reasoning_parts.clear()
+                        artifact_delivery_final_response_pending = True
+                        self._write_turn_call_log(
+                            "artifact_final_response_provider_requested",
+                            reason="publish_artifact_completed",
+                            artifact_count=len(artifact_delivery_final_response_artifacts),
+                            provider=getattr(self.provider, "provider_name", ""),
+                            prior_text_chars=prior_text_chars,
+                        )
+                        yield self._transition(AgentState.THINKING)
+                        continue
                     _finish_artifact_delivery_without_provider()
                     break
                 if turn_yielded:
@@ -3903,6 +3947,7 @@ class Agent:
                     "\n".join(final_reasoning_parts) if final_reasoning_parts else None
                 ),
                 session_totals=session_totals,
+                metadata=provider_done_metadata,
             )
         # Reset for next turn
         self._state = AgentState.IDLE

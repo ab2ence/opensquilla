@@ -1820,6 +1820,7 @@ class TurnRunner:
         agent_id: str = "main",
         model: str | None = None,
         attachments: list[dict] | None = None,
+        reply_mode: str | None = None,
         timeout: float | None = None,
         max_iterations: int | None = None,
         iteration_timeout: float | None = None,
@@ -1884,6 +1885,7 @@ class TurnRunner:
                     agent_id,
                     model,
                     attachments or [],
+                    reply_mode,
                     effective_tool_context,
                     timeout=timeout,
                     max_iterations=max_iterations,
@@ -1925,6 +1927,7 @@ class TurnRunner:
                         agent_id,
                         model,
                         attachments or [],
+                        reply_mode,
                         effective_tool_context,
                         timeout=timeout,
                         max_iterations=max_iterations,
@@ -1960,6 +1963,7 @@ class TurnRunner:
         agent_id: str,
         model: str | None,
         attachments: list[dict],
+        reply_mode: str | None,
         tool_context: ToolContext | None = None,
         timeout: float | None = None,
         max_iterations: int | None = None,
@@ -2097,6 +2101,7 @@ class TurnRunner:
                     attachments=attachments,
                     bootstrap_context_mode=bootstrap_context_mode,
                     model=model,
+                    reply_mode=reply_mode or "",
                     history_has_persisted_user=history_has_persisted_user,
                     persist_input=persist_input,
                     fresh_user_session=(
@@ -2313,6 +2318,7 @@ class TurnRunner:
                     agent_id,
                     model,
                     attachments,
+                    reply_mode,
                     tool_context,
                     timeout=timeout,
                     max_iterations=max_iterations,
@@ -3818,6 +3824,7 @@ class TurnRunner:
         tool_context: ToolContext | None = None,
         normalization_metadata: dict[str, Any] | None = None,
         input_provenance: dict[str, Any] | None = None,
+        reply_mode: str | None = None,
     ) -> tuple[Any, Any]:
         """Run the pre-turn pipeline and re-resolve provider if model changed.
 
@@ -3829,6 +3836,7 @@ class TurnRunner:
         engine pipeline records.
         """
         from opensquilla.engine.pipeline import TurnContext, run_pipeline
+        from opensquilla.reply_modes import normalize_reply_mode
         from opensquilla.engine.steps import (
             apply_prompt_cache,
             apply_squilla_router,
@@ -3846,6 +3854,8 @@ class TurnRunner:
 
         router_cfg = getattr(self._config, "squilla_router", None)
         router_timeout = float(getattr(router_cfg, "routing_timeout_seconds", 5.0) or 5.0)
+        configured_reply_mode = getattr(getattr(self._config, "reply", None), "default_mode", "router")
+        effective_reply_mode = normalize_reply_mode(reply_mode, default=configured_reply_mode)
 
         def _copy_router_turn(turn: TurnContext) -> TurnContext:
             metadata: dict[str, Any] = {}
@@ -3898,6 +3908,11 @@ class TurnRunner:
             # parsing on the deterministic compatibility path.
             "meta_llm_chat": self._make_meta_llm_chat(provider, session_key),
             "router_control_hold_store": self._router_control_hold_store,
+            "reply_mode": effective_reply_mode,
+            "fusion_trace_session_key": session_key,
+            "fusion_trace_agent_id": (
+                getattr(tool_context, "agent_id", None) if tool_context is not None else ""
+            ),
             # Surface the resolved per-agent workspace so the meta_invoke
             # handler in Agent._run_one_streaming (agent.py ~L4724) can
             # find it without falling through to default_workspace_dir().
@@ -3985,9 +4000,17 @@ class TurnRunner:
             metadata=initial_metadata,
             raw_message=semantic_message,
         )
-        turn = await run_pipeline(
-            turn,
-            [
+        pipeline_steps = [
+            resolve_model,
+            observe_reasoning_hint,
+            meta_resolution,
+            filter_skills,
+            inject_subagent_grounding,
+            inject_platform_hint,
+            apply_prompt_cache,
+        ]
+        if effective_reply_mode == "router":
+            pipeline_steps = [
                 resolve_model,
                 apply_vision_followup_gate,
                 _bounded_apply_squilla_router,
@@ -3997,11 +4020,30 @@ class TurnRunner:
                 inject_subagent_grounding,
                 inject_platform_hint,
                 apply_prompt_cache,
-            ],
+            ]
+        else:
+            turn.metadata["routing_applied"] = False
+            turn.metadata["routing_source"] = "none"
+            turn.metadata["routed_model"] = ""
+            turn.metadata["routed_tier"] = None
+        turn = await run_pipeline(
+            turn,
+            pipeline_steps,
         )
 
         # Apply routed model back to cloned selector (local, not shared)
-        if turn.model and cloned_selector is not None:
+        if effective_reply_mode == "fusion":
+            from opensquilla.fusion_reply import build_fusion_reply_provider
+
+            provider = build_fusion_reply_provider(self._config)
+            turn.model = getattr(provider, "model", "") or "fusion"
+            turn.metadata["fusion_reply_enabled"] = True
+            turn.metadata["fusion_reply_model"] = turn.model
+            turn.metadata["routing_applied"] = False
+            turn.metadata["routing_source"] = "none"
+            turn.metadata["routed_model"] = ""
+            turn.metadata["routed_tier"] = None
+        elif turn.model and cloned_selector is not None:
             router_fallback_chain = (
                 turn.metadata.get("router_fallback_chain")
                 if turn.metadata.get("routing_applied") is True

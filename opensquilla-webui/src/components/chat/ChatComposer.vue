@@ -78,6 +78,20 @@
             </button>
           </div>
           <div class="chat-input-actions chat-input-actions--right">
+            <label class="chat-reply-mode" title="Reply mode">
+              <span class="chat-reply-mode__label">Mode</span>
+              <select
+                class="chat-reply-mode__select"
+                :value="replyMode"
+                aria-label="Reply mode"
+                @change="onReplyModeChange"
+              >
+                <option value="">Default</option>
+                <option value="router">Router</option>
+                <option value="direct">Direct</option>
+                <option value="fusion">Fusion</option>
+              </select>
+            </label>
             <div v-if="isStreaming" class="chat-busy-mode" role="group" aria-label="Delivery mode while the agent is responding">
               <button
                 class="chat-busy-mode__btn"
@@ -136,6 +150,7 @@ interface ChatComposerExpose {
 defineProps<{
   attachments: Attachment[]
   busySendMode: 'queue' | 'steer'
+  replyMode: string
   hasSendContent: boolean
   isStreaming: boolean
   isNewLanding: boolean
@@ -158,6 +173,7 @@ const emit = defineEmits<{
   removeAttachment: [index: number]
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
+  setReplyMode: [mode: string]
   setElevatedMode: [mode: string]
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
@@ -171,6 +187,11 @@ const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
+
+function onReplyModeChange(event: Event) {
+  const target = event.target as HTMLSelectElement | null
+  emit('setReplyMode', target?.value || '')
+}
 
 function attachmentIcon(att: Attachment): IconName {
   return (att.mime || '').startsWith('image/') ? 'image' : 'fileText'
@@ -368,6 +389,28 @@ defineExpose<ChatComposerExpose>({
 
 .chat-input-actions--right {
   flex-shrink: 0;
+}
+
+.chat-reply-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 2rem;
+  padding: 0 0.25rem 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.chat-reply-mode__select {
+  max-width: 5.5rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  outline: none;
 }
 
 .chat-busy-mode {

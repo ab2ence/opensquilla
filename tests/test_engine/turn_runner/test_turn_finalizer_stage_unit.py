@@ -321,7 +321,7 @@ async def test_turn_usage_persists_compact_fusion_summary_only() -> None:
         metadata={
             "fusion_summary": {
                 "trace_id": "trace-1",
-                "algorithm": "specem_weighted_pairwise",
+                "algorithm": "specem_anonymous_segment_score",
                 "rounds_completed": 1,
                 "member_count": 2,
                 "output_contribution": {
@@ -357,6 +357,7 @@ async def test_turn_usage_persists_compact_fusion_summary_only() -> None:
     usage = recs["transcript_append"].calls[0]["turn_usage"]
     summary = usage["fusion_summary"]
     assert summary["trace_id"] == "trace-1"
+    assert summary["status"] == "ok"
     assert summary["rounds_completed"] == 1
     members = summary["output_contribution"]["members"]
     assert members[0] == {
@@ -369,6 +370,66 @@ async def test_turn_usage_persists_compact_fusion_summary_only() -> None:
     }
     assert "verifier_results" not in summary
     assert "raw_candidate_text" not in members[0]
+
+
+@pytest.mark.asyncio
+async def test_turn_usage_persists_compact_fusion_assist_summary_only() -> None:
+    stage, recs = _make_stage()
+    done = DoneEvent(
+        text="ok",
+        input_tokens=5,
+        output_tokens=3,
+        metadata={
+            "fusion_summary": {
+                "trace_id": "trace-2",
+                "architecture": "agent_loop_assist",
+                "algorithm": "specem_anonymous_advice_score",
+                "assist_iterations": 2,
+                "rounds_completed": 2,
+                "member_count": 2,
+                "action_model": "deepseek/deepseek-v4-flash",
+                "final_answer_author": "action_model",
+                "assist_participation": {
+                    "basis": "draft_verify_selected_advice",
+                    "members": [
+                        {
+                            "member_id": "gemini",
+                            "provider": "openrouter",
+                            "model": "google/gemini-3-flash-preview",
+                            "draft_calls": 2,
+                            "verify_calls": 2,
+                            "selected_advice": 1,
+                            "raw_advice": "must not persist",
+                        }
+                    ],
+                },
+                "raw_selected_advice": "must not persist",
+            }
+        },
+    )
+    inp = _make_input(final_text_parts=["ok"], done_event=done)
+
+    await stage.run(inp)
+
+    usage = recs["transcript_append"].calls[0]["turn_usage"]
+    summary = usage["fusion_summary"]
+    assert summary["architecture"] == "agent_loop_assist"
+    assert summary["status"] == "ok"
+    assert summary["assist_iterations"] == 2
+    assert summary["action_model"] == "deepseek/deepseek-v4-flash"
+    members = summary["assist_participation"]["members"]
+    assert members == [
+        {
+            "member_id": "gemini",
+            "provider": "openrouter",
+            "model": "google/gemini-3-flash-preview",
+            "draft_calls": 2,
+            "verify_calls": 2,
+            "selected_advice": 1,
+        }
+    ]
+    assert "raw_selected_advice" not in summary
+    assert "raw_advice" not in members[0]
 
 
 @pytest.mark.asyncio

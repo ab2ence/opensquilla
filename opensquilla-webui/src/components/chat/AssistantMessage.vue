@@ -117,14 +117,17 @@
                   <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
                 </div>
                 <div v-if="message.meta.fusionContributions?.length" class="msg-meta-popover__fusion">
-                  <div class="msg-meta-popover__fusion-title">final output contribution</div>
+                  <div class="msg-meta-popover__fusion-title">{{ message.meta.fusionContributionTitle || 'fusion' }}</div>
                   <div
                     v-for="member in message.meta.fusionContributions"
                     :key="member.memberId"
                     class="msg-meta-popover__row"
                   >
                     <span class="msg-meta-popover__label" :title="member.model">{{ member.label }}</span>
-                    <span class="msg-meta-popover__value">{{ Math.round(member.share * 100) }}%</span>
+                    <span v-if="message.meta.fusionAssistMode" class="msg-meta-popover__value">
+                      d{{ member.draftCalls }} / v{{ member.verifyCalls }} / s{{ member.selectedAdvice }}
+                    </span>
+                    <span v-else class="msg-meta-popover__value">{{ Math.round(member.share * 100) }}%</span>
                   </div>
                 </div>
               </div>

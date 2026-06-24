@@ -20,6 +20,8 @@ def test_gateway_config_accepts_fusion_reply_models() -> None:
             "reply": {"default_mode": "fusion"},
             "fusion_reply": {
                 "enabled": True,
+                "architecture": "agent_loop_assist",
+                "assist_max_rounds": 1,
                 "models": [
                     {"id": "a", "provider": "openrouter", "model": "model-a", "weight": 2.0},
                     {"id": "b", "provider": "openrouter", "model": "model-b"},
@@ -31,6 +33,8 @@ def test_gateway_config_accepts_fusion_reply_models() -> None:
 
     assert cfg.reply.default_mode == "fusion"
     assert cfg.fusion_reply.enabled is True
+    assert cfg.fusion_reply.architecture == "agent_loop_assist"
+    assert cfg.fusion_reply.assist_max_rounds == 1
     assert cfg.fusion_reply.max_rounds == 4
     assert cfg.fusion_reply.min_rounds == 2
     assert cfg.fusion_reply.adaptive_segments is True

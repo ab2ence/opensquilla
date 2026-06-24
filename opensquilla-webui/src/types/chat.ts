@@ -168,6 +168,9 @@ export interface FusionContributionMember {
   selectedSegments: number
   selectedChars: number
   share: number
+  draftCalls: number
+  verifyCalls: number
+  selectedAdvice: number
 }
 
 /** Per-turn model reasoning captured from thinking deltas / done backfill. */
@@ -216,6 +219,8 @@ export interface ChatMessageMeta {
   turnSavedPct?: number
   fusionContributions?: FusionContributionMember[]
   fusionContributionLabel?: string
+  fusionContributionTitle?: string
+  fusionAssistMode?: boolean
 }
 
 export interface ChatRenderedMessage {

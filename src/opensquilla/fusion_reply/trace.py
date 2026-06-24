@@ -55,6 +55,7 @@ class FusionTraceRecorder:
         members: list[Mapping[str, Any]],
         action_model: str,
         max_rounds: int,
+        architecture: str = "final_answer_fusion",
         min_rounds: int = 1,
     ) -> None:
         self.settings = settings
@@ -62,6 +63,8 @@ class FusionTraceRecorder:
         self.metadata = dict(metadata or {})
         self.path = _trace_path(settings) if settings.enabled and settings.write_jsonl else None
         self._members = [dict(member) for member in members]
+        self._architecture = str(architecture or "final_answer_fusion")
+        self._action_model = action_model
         self._member_stats: dict[str, dict[str, Any]] = {}
         for member in self._members:
             member_id = str(member.get("id") or "")
@@ -71,6 +74,8 @@ class FusionTraceRecorder:
                 "model": str(member.get("model") or ""),
                 "draft_calls": 0,
                 "verify_calls": 0,
+                "stitch_calls": 0,
+                "selected_advice": 0,
                 "selected_segments": 0,
                 "selected_chars": 0,
                 "input_tokens": 0,
@@ -82,6 +87,7 @@ class FusionTraceRecorder:
             }
         self.emit(
             "fusion.start",
+            architecture=self._architecture,
             action_model=action_model,
             max_rounds=max_rounds,
             min_rounds=min_rounds,
@@ -123,6 +129,8 @@ class FusionTraceRecorder:
             stats["draft_calls"] += 1
         elif stage == "verify":
             stats["verify_calls"] += 1
+        elif stage == "stitch":
+            stats["stitch_calls"] += 1
         for key in (
             "input_tokens",
             "output_tokens",
@@ -142,7 +150,16 @@ class FusionTraceRecorder:
         stats["selected_segments"] += 1
         stats["selected_chars"] += len(text or "")
 
+    def record_selected_advice(self, member_id: str, text: str) -> None:
+        stats = self._member_stats.get(member_id)
+        if stats is None:
+            return
+        stats["selected_advice"] += 1
+        stats["selected_chars"] += len(text or "")
+
     def summary(self, *, rounds_completed: int) -> dict[str, Any]:
+        if self._architecture == "agent_loop_assist":
+            return self._assist_summary(rounds_completed=rounds_completed)
         total_chars = sum(
             int(stats.get("selected_chars", 0) or 0)
             for stats in self._member_stats.values()
@@ -165,7 +182,8 @@ class FusionTraceRecorder:
         members.sort(key=lambda item: (-float(item["share"]), str(item["member_id"])))
         return {
             "trace_id": self.trace_id,
-            "algorithm": "specem_weighted_pairwise",
+            "architecture": self._architecture,
+            "algorithm": "specem_anonymous_segment_score",
             "rounds_completed": rounds_completed,
             "member_count": len(members),
             "output_contribution": {
@@ -174,10 +192,55 @@ class FusionTraceRecorder:
             },
         }
 
+    def _assist_summary(self, *, rounds_completed: int) -> dict[str, Any]:
+        members: list[dict[str, Any]] = []
+        for member in self._members:
+            member_id = str(member.get("id") or "")
+            stats = self._member_stats.get(member_id, {})
+            members.append(
+                {
+                    "member_id": member_id,
+                    "provider": str(member.get("provider") or ""),
+                    "model": str(member.get("model") or ""),
+                    "draft_calls": int(stats.get("draft_calls", 0) or 0),
+                    "verify_calls": int(stats.get("verify_calls", 0) or 0),
+                    "selected_advice": int(stats.get("selected_advice", 0) or 0),
+                    "input_tokens": int(stats.get("input_tokens", 0) or 0),
+                    "output_tokens": int(stats.get("output_tokens", 0) or 0),
+                    "reasoning_tokens": int(stats.get("reasoning_tokens", 0) or 0),
+                    "cached_tokens": int(stats.get("cached_tokens", 0) or 0),
+                    "cache_write_tokens": int(stats.get("cache_write_tokens", 0) or 0),
+                    "billed_cost": float(stats.get("billed_cost", 0.0) or 0.0),
+                }
+            )
+        members.sort(
+            key=lambda item: (
+                -int(item["selected_advice"]),
+                -int(item["draft_calls"]) - int(item["verify_calls"]),
+                str(item["member_id"]),
+            )
+        )
+        return {
+            "trace_id": self.trace_id,
+            "architecture": "agent_loop_assist",
+            "algorithm": "specem_anonymous_advice_score",
+            "assist_iterations": rounds_completed,
+            "rounds_completed": rounds_completed,
+            "member_count": len(members),
+            "action_model": self._action_model,
+            "final_answer_author": "action_model",
+            "assist_participation": {
+                "basis": "draft_verify_selected_advice",
+                "members": members,
+            },
+        }
+
     def finish(self, *, status: str, rounds_completed: int, error: str = "") -> dict[str, Any]:
         summary = self.summary(rounds_completed=rounds_completed)
+        summary["status"] = status
+        event = "fusion.assist.end" if self._architecture == "agent_loop_assist" else "fusion.end"
         self.emit(
-            "fusion.end",
+            event,
             status=status,
             error=error,
             rounds_completed=rounds_completed,

@@ -291,7 +291,11 @@ class FusionReplyModelConfig(BaseModel):
     base_url: str = ""
     proxy: str = ""
     provider_routing: dict[str, str] = Field(default_factory=dict)
-    weight: float = Field(default=1.0, gt=0)
+    weight: float = Field(
+        default=1.0,
+        gt=0,
+        description="Deprecated compatibility field; fusion scoring is anonymous/equal-weight.",
+    )
 
 
 class FusionTraceConfig(BaseModel):
@@ -315,6 +319,7 @@ class FusionReplyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    architecture: Literal["agent_loop_assist", "final_answer_fusion"] = "agent_loop_assist"
     action_model: str = ""
     action_provider: str = ""
     action_api_key: str = ""
@@ -323,13 +328,18 @@ class FusionReplyConfig(BaseModel):
     action_proxy: str = ""
     action_provider_routing: dict[str, str] = Field(default_factory=dict)
     models: list[FusionReplyModelConfig] = Field(default_factory=list)
+    assist_max_rounds: int = Field(default=1, ge=1, le=4)
     max_rounds: int = Field(default=4, ge=1, le=8)
     min_rounds: int = Field(default=2, ge=1, le=8)
     step_max_tokens: int = Field(default=1024, ge=1)
     judge_max_tokens: int = Field(default=512, ge=1)
     temperature: float | None = Field(default=0.7, ge=0.0, le=2.0)
     judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
-    feedback_alpha: float = Field(default=1.0, ge=0.0)
+    feedback_alpha: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Deprecated compatibility field; fusion no longer updates model weights.",
+    )
     adaptive_segments: bool = True
     trace: FusionTraceConfig = Field(default_factory=FusionTraceConfig)
 

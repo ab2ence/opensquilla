@@ -52,11 +52,36 @@ class _FakeProvider:
             yield TextDeltaEvent(text=json.dumps({"scores": scores, "ranking": ranking}))
             yield DoneEvent(input_tokens=1, output_tokens=1, model=f"judge:{self.model}")
             return
+        if "fusion constrained final stitch editor" in system.lower():
+            prompt = str(messages[-1].content)
+            yield TextDeltaEvent(text=_stitch_from_prompt(prompt))
+            yield DoneEvent(input_tokens=3, output_tokens=4, model=f"stitch:{self.model}")
+            return
 
         draft = self.drafts[min(self._draft_index, len(self.drafts) - 1)]
         self._draft_index += 1
         yield TextDeltaEvent(text=draft)
         yield DoneEvent(input_tokens=2, output_tokens=3, model=self.model)
+
+    async def list_models(self) -> list[object]:
+        return []
+
+
+class _FailingProvider:
+    provider_name = "fake"
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.calls: list[tuple[list[Message], object, ChatConfig | None]] = []
+
+    async def chat(
+        self,
+        messages: list[Message],
+        tools: object = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls.append((messages, tools, config))
+        raise RuntimeError(f"{self.model} unavailable")
 
     async def list_models(self) -> list[object]:
         return []
@@ -95,6 +120,38 @@ class _ActionProvider:
             )
             return
         yield DoneEvent(stop_reason="end_turn", input_tokens=5, output_tokens=6, model="action")
+
+
+class _SequencedActionProvider:
+    provider_name = "action"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[Message], object, ChatConfig | None]] = []
+
+    async def chat(
+        self,
+        messages: list[Message],
+        tools: object = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls.append((messages, tools, config))
+        if len(self.calls) == 1:
+            yield ToolUseStartEvent(tool_use_id="tool-1", tool_name="search")
+            yield ToolUseDeltaEvent(tool_use_id="tool-1", json_fragment='{"q":"glm"}')
+            yield ToolUseEndEvent(
+                tool_use_id="tool-1",
+                tool_name="search",
+                arguments={"q": "glm"},
+            )
+            yield DoneEvent(
+                stop_reason="tool_use",
+                input_tokens=5,
+                output_tokens=6,
+                model="action",
+            )
+            return
+        yield TextDeltaEvent(text="final action answer")
+        yield DoneEvent(stop_reason="end_turn", input_tokens=7, output_tokens=8, model="action")
 
 
 class _ReasoningOnlyThenDraftProvider(_FakeProvider):
@@ -155,7 +212,18 @@ def _scores_from_prompt(prompt: str) -> dict[str, float]:
     }
 
 
-def test_fusion_reply_selects_weighted_anonymous_winner() -> None:
+def _stitch_from_prompt(prompt: str) -> str:
+    segments: list[str] = []
+    for match in re.finditer(
+        r"Selected segment \d+:\n(.*?)(?=\n\nSelected segment \d+:|\n\nReturn the final stitched answer only\.|\Z)",
+        prompt,
+        flags=re.S,
+    ):
+        segments.append(match.group(1).strip())
+    return "\n\n".join(segment for segment in segments if segment)
+
+
+def test_fusion_reply_selects_highest_anonymous_score_winner() -> None:
     asyncio.run(_run_fusion_reply_selection_case())
 
 
@@ -164,8 +232,8 @@ async def _run_fusion_reply_selection_case() -> None:
     strong = _FakeProvider("strong", "GOOD candidate")
     provider = FusionReplyProvider(
         [
-            FusionMember("weak", "fake", "weak", weak),
-            FusionMember("strong", "fake", "strong", strong),
+            FusionMember("weak", "fake", "weak", weak, weight=100.0),
+            FusionMember("strong", "fake", "strong", strong, weight=0.01),
         ],
         max_rounds=1,
     )
@@ -213,7 +281,7 @@ async def _run_fusion_trace_case(tmp_path) -> None:
 
     assert done is not None
     summary = done.metadata["fusion_summary"]
-    assert summary["algorithm"] == "specem_weighted_pairwise"
+    assert summary["algorithm"] == "specem_anonymous_segment_score"
     members = summary["output_contribution"]["members"]
     assert members[0]["member_id"] == "strong"
     assert members[0]["share"] == 1.0
@@ -231,12 +299,18 @@ async def _run_fusion_trace_case(tmp_path) -> None:
     assert "fusion.verify.result" in kinds
     assert "fusion.aggregate" in kinds
     assert "fusion.select" in kinds
+    assert "fusion.stitch.request" not in kinds
+    assert "fusion.weights.update" not in kinds
     assert kinds[-1] == "fusion.end"
     assert all(event["session_key"] == "session-1" for event in events)
     verify_result = next(event for event in events if event["event"] == "fusion.verify.result")
     assert verify_result["label_scores"]
     assert verify_result["normalized_scores"]
     assert verify_result["parse_mode"] == "scores"
+    aggregate = next(event for event in events if event["event"] == "fusion.aggregate")
+    assert aggregate["anonymous_scores"]
+    assert "weighted_scores" not in aggregate
+    assert all("weight" not in item for item in aggregate["verifier_results"])
 
 
 def test_fusion_reply_harness_retries_reasoning_only_draft(tmp_path) -> None:
@@ -340,6 +414,9 @@ async def _run_multi_segment_done_gate_case(tmp_path) -> None:
     assert selects[0]["done_ignored_reason"] == "min_rounds_not_reached"
     assert selects[1]["candidate_is_done"] is True
     assert selects[1]["is_done"] is True
+    stitch_result = next(event for event in events if event["event"] == "fusion.stitch.result")
+    assert stitch_result["editor_member_id"] == "strong"
+    assert stitch_result["applied"] is True
 
 
 def test_fusion_reply_adaptive_segment_plan_expands_report_tasks(tmp_path) -> None:
@@ -467,20 +544,84 @@ async def _run_action_tool_passthrough_case() -> None:
         DoneEvent,
     ]
     assert action.calls and action.calls[0][1] == _tool_defs()
-    assert weak.calls == []
-    assert strong.calls == []
+    assert len(weak.calls) == 2  # assist draft + verifier
+    assert len(strong.calls) == 2
+    assert all(call[1] is None for call in [*weak.calls, *strong.calls])
+    action_messages = action.calls[0][0]
+    assert "Hidden Fusion Assist advice" in str(action_messages[-1].content)
     assert isinstance(events[-1], DoneEvent)
     assert events[-1].stop_reason == "tool_use"
+    assert events[-1].metadata["fusion_summary"]["architecture"] == "agent_loop_assist"
 
 
-def test_fusion_reply_fuses_only_after_action_final_text() -> None:
-    asyncio.run(_run_action_final_fusion_case())
+def test_fusion_reply_assists_each_agent_loop_iteration() -> None:
+    asyncio.run(_run_multi_iteration_assist_case())
 
 
-async def _run_action_final_fusion_case() -> None:
+async def _run_multi_iteration_assist_case() -> None:
+    action = _SequencedActionProvider()
+    weak = _FakeProvider("weak", ["BAD first advice", "BAD second advice"])
+    strong = _FakeProvider("strong", ["GOOD first advice", "GOOD second advice"])
+    provider = FusionReplyProvider(
+        [
+            FusionMember("weak", "fake", "weak", weak),
+            FusionMember("strong", "fake", "strong", strong),
+        ],
+        action_provider=action,
+        action_member_id="weak",
+        max_rounds=1,
+    )
+
+    first_events: list[StreamEvent] = []
+    async for event in provider.chat(
+        [Message(role="user", content="research")],
+        tools=_tool_defs(),
+    ):
+        first_events.append(event)
+
+    second_text = ""
+    second_done: DoneEvent | None = None
+    async for event in provider.chat(
+        [
+            Message(role="user", content="research"),
+            Message(
+                role="user",
+                content=[
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "search result",
+                    }
+                ],
+            ),
+        ],
+        tools=_tool_defs(),
+    ):
+        if isinstance(event, TextDeltaEvent):
+            second_text += event.text
+        elif isinstance(event, DoneEvent):
+            second_done = event
+
+    assert isinstance(first_events[-1], DoneEvent)
+    assert first_events[-1].stop_reason == "tool_use"
+    assert second_text == "final action answer"
+    assert second_done is not None
+    assert second_done.metadata["fusion_summary"]["assist_iterations"] == 2
+    assert len(action.calls) == 2
+    assert all("Hidden Fusion Assist advice" in str(call[0][-1].content) for call in action.calls)
+    assert len(weak.calls) == 4
+    assert len(strong.calls) == 4
+    assert all(call[1] is None for call in [*weak.calls, *strong.calls])
+
+
+def test_fusion_reply_assists_before_action_final_text() -> None:
+    asyncio.run(_run_action_final_assist_case())
+
+
+async def _run_action_final_assist_case() -> None:
     action = _ActionProvider(text="BAD action answer", use_tool=False)
     weak = _FakeProvider("weak", "SHOULD NOT DRAFT")
-    strong = _FakeProvider("strong", "GOOD fused answer")
+    strong = _FakeProvider("strong", "GOOD hidden advice")
     provider = FusionReplyProvider(
         [
             FusionMember("weak", "fake", "weak", weak),
@@ -502,13 +643,57 @@ async def _run_action_final_fusion_case() -> None:
         elif isinstance(event, DoneEvent):
             done = event
 
-    assert text == "GOOD fused answer"
+    assert text == "BAD action answer"
     assert done is not None
-    assert done.model == "fusion:weak+strong"
+    assert done.model == "action"
     assert action.calls and action.calls[0][1] == _tool_defs()
-    assert len(weak.calls) == 1  # verifier only; the action text seeded weak's draft
-    assert len(strong.calls) == 2  # draft + verifier
+    action_messages = action.calls[0][0]
+    assert "Hidden Fusion Assist advice" in str(action_messages[-1].content)
+    assert "GOOD hidden advice" in str(action_messages[-1].content)
+    assert len(weak.calls) == 2  # assist draft + verifier
+    assert len(strong.calls) == 2  # assist draft + verifier
     assert all(call[1] is None for call in [*weak.calls, *strong.calls])
+    summary = done.metadata["fusion_summary"]
+    assert summary["architecture"] == "agent_loop_assist"
+    assert summary["final_answer_author"] == "action_model"
+    assert summary["assist_participation"]["members"][0]["selected_advice"] == 1
+
+
+def test_fusion_reply_assist_failure_is_traced_and_action_continues() -> None:
+    asyncio.run(_run_assist_failure_action_continues_case())
+
+
+async def _run_assist_failure_action_continues_case() -> None:
+    action = _ActionProvider(text="action still answers", use_tool=False)
+    failing = _FailingProvider("weak")
+    provider = FusionReplyProvider(
+        [FusionMember("weak", "fake", "weak", failing)],
+        action_provider=action,
+        action_member_id="weak",
+        max_rounds=1,
+    )
+
+    text = ""
+    done: DoneEvent | None = None
+    async for event in provider.chat(
+        [Message(role="user", content="answer despite assist failure")],
+        tools=_tool_defs(),
+    ):
+        if isinstance(event, TextDeltaEvent):
+            text += event.text
+        elif isinstance(event, DoneEvent):
+            done = event
+
+    assert text == "action still answers"
+    assert done is not None
+    assert done.model == "action"
+    assert action.calls and action.calls[0][1] == _tool_defs()
+    assert "Hidden Fusion Assist advice" not in str(action.calls[0][0][-1].content)
+    assert failing.calls and failing.calls[0][1] is None
+    summary = done.metadata["fusion_summary"]
+    assert summary["architecture"] == "agent_loop_assist"
+    assert summary["status"] == "error"
+    assert summary["assist_iterations"] == 0
 
 
 def test_fusion_reply_multi_segment_does_not_seed_action_full_answer() -> None:
@@ -532,6 +717,7 @@ async def _run_action_final_multi_segment_no_seed_case() -> None:
         ],
         action_provider=action,
         action_member_id="weak",
+        architecture="final_answer_fusion",
         max_rounds=2,
         min_rounds=2,
     )
@@ -547,5 +733,5 @@ async def _run_action_final_multi_segment_no_seed_case() -> None:
     assert text == "GOOD first segment\n\nGOOD second segment"
     assert action.calls and action.calls[0][1] == _tool_defs()
     assert len(weak.calls) == 4  # two drafts + two verifications; no action seed candidate
-    assert len(strong.calls) == 4
+    assert len(strong.calls) == 5  # two drafts + two verifications + final stitch
     assert all(call[1] is None for call in [*weak.calls, *strong.calls])

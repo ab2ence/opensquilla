@@ -12,8 +12,9 @@ does not persist enough detail to audit how each fusion member participated.
 This spec adds a detailed backend trace for the fusion phase while keeping the
 WebUI intentionally simple. The WebUI should only show final output
 contribution. The backend trace must retain the full fusion audit chain:
-candidate generation, anonymous verification, normalized scoring, weighted
-aggregation, selection, weight update, usage, latency, and cost per member.
+candidate generation, anonymous verification, normalized scoring, equal-weight
+anonymous aggregation, selection, constrained final stitching, usage, latency,
+and cost per member.
 
 ## Goals
 
@@ -22,9 +23,11 @@ aggregation, selection, weight update, usage, latency, and cost per member.
 - Record exactly which model verified each anonymous candidate set.
 - Record raw verifier output, parsed scores, normalized scores, rankings, and
   parse fallback behavior.
-- Record weights before and after each fusion round.
+- Record anonymous verifier scores and aggregate candidate scores for each fusion round.
 - Record final selected member per round and final output contribution per
   member.
+- Record the constrained final stitch editor, prompt, result, fallback status,
+  usage, and latency when multiple selected segments are polished.
 - Record per-member usage: input tokens, output tokens, reasoning tokens,
   cached tokens, cache write tokens, billed cost, cost source, and latency.
 - Keep WebUI display minimal: only final output contribution by model.
@@ -46,11 +49,15 @@ aggregation, selection, weight update, usage, latency, and cost per member.
 - Fusion member: A model configured under `[[fusion_reply.models]]`.
 - Candidate: One member's proposed next answer segment during a fusion round.
 - Verifier: A fusion member acting as judge over anonymous candidates.
-- Output contribution: The fraction of final visible answer text selected from
-  each model's candidates.
-- Vote weight: The current algorithmic verifier/candidate weight for a member.
-- Score share: A candidate's weighted score divided by the total weighted score
-  for the round.
+- Output contribution: The fraction of selected segment text chosen from each
+  model before final stitch editing.
+- Final stitch: A constrained editor pass that may remove repetition and smooth
+  transitions across selected segments, but must not add unsupported facts or
+  replace the selected content with a new answer.
+- Anonymous score: A candidate's aggregate score after each verifier's
+  normalized score sheet contributes equally.
+- Score share: A candidate's anonymous score divided by the total anonymous
+  score for the round.
 
 ## User-Facing Behavior
 
@@ -68,9 +75,9 @@ Example compact display:
 
 Fusion experiments should run in multi-segment mode. `min_rounds` prevents the
 first selected candidate from ending the whole answer immediately, so the trace
-can validate iterative segment generation, anonymous comparison, selection, and
-weight update across rounds. Contribution is accumulated over selected
-segments:
+can validate iterative segment generation, anonymous comparison, and selection
+across rounds. Contribution is accumulated over selected segments before any
+constrained final stitch:
 
 | Model | Final output contribution |
 | --- | ---: |
@@ -78,7 +85,7 @@ segments:
 | gemini_3_flash | 42% |
 | kimi_k2_7_code | 20% |
 
-Default contribution unit: characters.
+Default contribution unit: selected segment characters before final stitch.
 
 Future optional unit: tokenizer-estimated output tokens. If token contribution is
 added later, WebUI must label the unit clearly.
@@ -193,7 +200,6 @@ Emitted once before fusion drafting begins.
     "judge_max_tokens": 512,
     "temperature": 0.7,
     "judge_temperature": 0.0,
-    "feedback_alpha": 1.0,
     "adaptive_segments": true
   },
   "action": {
@@ -205,23 +211,17 @@ Emitted once before fusion drafting begins.
     {
       "id": "deepseek_v4_flash",
       "provider": "openrouter",
-      "model": "deepseek/deepseek-v4-flash",
-      "configured_weight": 1.0,
-      "initial_weight": 0.333333
+      "model": "deepseek/deepseek-v4-flash"
     },
     {
       "id": "gemini_3_flash",
       "provider": "openrouter",
-      "model": "google/gemini-3-flash-preview",
-      "configured_weight": 1.0,
-      "initial_weight": 0.333333
+      "model": "google/gemini-3-flash-preview"
     },
     {
       "id": "kimi_k2_7_code",
       "provider": "openrouter",
-      "model": "moonshotai/kimi-k2.7-code",
-      "configured_weight": 1.0,
-      "initial_weight": 0.333333
+      "model": "moonshotai/kimi-k2.7-code"
     }
   ]
 }
@@ -261,11 +261,6 @@ Emitted once per round.
 {
   "kind": "fusion.round.start",
   "round": 1,
-  "weights_before": {
-    "deepseek_v4_flash": 0.333333,
-    "gemini_3_flash": 0.333333,
-    "kimi_k2_7_code": 0.333333
-  },
   "selected_text_chars_before_round": 0,
   "segment_goal": {
     "index": 0,
@@ -404,7 +399,6 @@ Emitted before each verifier request.
   "kind": "fusion.verify.request",
   "round": 1,
   "verifier_id": "kimi_k2_7_code",
-  "verifier_weight": 0.333333,
   "candidate_labels": ["A", "B", "C"],
   "request": {
     "system_prompt": "full verifier system prompt",
@@ -431,7 +425,6 @@ Emitted after each verifier request succeeds or fails.
   "verifier_id": "kimi_k2_7_code",
   "provider": "openrouter",
   "model": "moonshotai/kimi-k2.7-code",
-  "verifier_weight": 0.333333,
   "status": "ok",
   "raw_response": "{\"scores\":{\"A\":0.72,\"B\":0.91,\"C\":0.55},\"ranking\":[\"B\",\"A\",\"C\"]}",
   "parsed_scores": {
@@ -482,23 +475,18 @@ Emitted once scores are aggregated.
 {
   "kind": "fusion.aggregate",
   "round": 1,
-  "weights_before": {
-    "deepseek_v4_flash": 0.333333,
-    "gemini_3_flash": 0.333333,
-    "kimi_k2_7_code": 0.333333
-  },
   "candidate_scores": {
     "0": {
       "member_id": "deepseek_v4_flash",
-      "weighted_score": 0.301
+      "anonymous_score": 0.301
     },
     "1": {
       "member_id": "gemini_3_flash",
-      "weighted_score": 0.421
+      "anonymous_score": 0.421
     },
     "2": {
       "member_id": "kimi_k2_7_code",
-      "weighted_score": 0.278
+      "anonymous_score": 0.278
     }
   },
   "score_share": {
@@ -522,8 +510,8 @@ Emitted once selected candidate is known.
   "selected_candidate_index": 1,
   "selected_label": "B",
   "selected_member": "gemini_3_flash",
-  "selection_reason": "highest_weighted_score",
-  "selected_weighted_score": 0.421,
+  "selection_reason": "highest_anonymous_score",
+  "selected_anonymous_score": 0.421,
   "tie_break": null,
   "selected_text": "full selected text when include_full_selected_text=true",
   "selected_text_chars": 1141,
@@ -534,43 +522,83 @@ Emitted once selected candidate is known.
 
 Supported `selection_reason` values:
 
-- `highest_weighted_score`
-- `tie_break_member_weight`
+- `highest_anonymous_score`
 - `tie_break_candidate_index`
 - `single_candidate`
 
-### fusion.weights.update
+Selected candidate scores are recorded for audit only. Fusion experiments should
+use multi-segment settings such as `max_rounds = 6`, `min_rounds = 2`, and
+`adaptive_segments = true`.
 
-Emitted once online feedback updates weights.
+### fusion.stitch.request
+
+Emitted only when two or more selected segments will be polished by a constrained
+final stitch editor.
 
 ```json
 {
-  "kind": "fusion.weights.update",
-  "round": 1,
-  "learning_rate": 0.333333,
-  "feedback_alpha": 1.0,
-  "rewards": {
-    "deepseek_v4_flash": 0.25,
-    "gemini_3_flash": 0.50,
-    "kimi_k2_7_code": 0.25
-  },
-  "weights_before": {
-    "deepseek_v4_flash": 0.333333,
-    "gemini_3_flash": 0.333333,
-    "kimi_k2_7_code": 0.333333
-  },
-  "weights_after": {
-    "deepseek_v4_flash": 0.324,
-    "gemini_3_flash": 0.352,
-    "kimi_k2_7_code": 0.324
+  "kind": "fusion.stitch.request",
+  "editor_member_id": "gemini_3_flash",
+  "provider": "openrouter",
+  "model": "google/gemini-3-flash-preview",
+  "selected_segment_count": 3,
+  "selected_segments": [
+    {
+      "round_index": 0,
+      "member_id": "gemini_3_flash",
+      "chars": 512
+    },
+    {
+      "round_index": 1,
+      "member_id": "kimi_k2_7_code",
+      "chars": 438
+    }
+  ],
+  "request": {
+    "system_prompt": "full constrained stitch system prompt",
+    "messages": [
+      {
+        "role": "user",
+        "content": "selected segments and stitch instructions"
+      }
+    ],
+    "max_tokens": 1536,
+    "temperature": 0.0
   }
 }
 ```
 
-For explicit one-round diagnostic runs, `weights_after` is recorded for audit,
-but it does not affect the already selected final answer. Fusion experiments
-should use multi-segment settings such as `max_rounds = 6`, `min_rounds = 2`,
-and `adaptive_segments = true`.
+The stitch editor is selected from the already participating Fusion members by
+largest selected-segment character contribution, with deterministic candidate
+order as the tie-break. This avoids adding a separate strong final-fusion model.
+
+### fusion.stitch.result
+
+Emitted after the constrained final stitch succeeds or falls back.
+
+```json
+{
+  "kind": "fusion.stitch.result",
+  "editor_member_id": "gemini_3_flash",
+  "status": "ok",
+  "applied": true,
+  "fallback_reason": "",
+  "final_text": "stitched final text when include_candidate_text=true",
+  "usage": {
+    "input_tokens": 1200,
+    "output_tokens": 480,
+    "reasoning_tokens": 0,
+    "cached_tokens": 0,
+    "cache_write_tokens": 0,
+    "billed_cost": 0.001,
+    "cost_source": "provider"
+  },
+  "latency_ms": 1800
+}
+```
+
+If the stitch call fails or returns empty visible text, OpenSquilla falls back
+to the selected segments concatenated in order.
 
 ### fusion.end
 
@@ -676,10 +704,12 @@ The trace must keep these concepts separate:
 - Tool/action participation: single action model participation in tool calls.
 - Draft participation: candidate generation calls per fusion member.
 - Verify participation: judge calls per fusion member.
-- Vote weight: current weight used to aggregate verifier scores.
+- Anonymous score: equal-weight aggregate verifier support for each candidate.
 - Score share: how much support each candidate received in the round.
-- Final output contribution: how many final answer characters came from each
-  selected member.
+- Final stitch participation: which selected Fusion member performed the
+  constrained polishing pass.
+- Final output contribution: how many selected-segment characters came from
+  each selected member before final stitch editing.
 
 WebUI displays only final output contribution.
 
@@ -696,14 +726,14 @@ If a member fails draft:
 If a verifier fails:
 
 - Emit `fusion.verify.result` with `status = "error"` and `parse_mode = "error"`.
-- Exclude that verifier from weighted aggregation.
+- Exclude that verifier from anonymous aggregation.
 - Continue if at least one verifier result remains.
 
 If all verifiers fail:
 
 - Emit `fusion.aggregate` with `fallback = "uniform_candidate_scores"`.
 - Select by deterministic fallback:
-  1. highest current member weight
+  1. highest anonymous aggregate score
   2. lowest candidate index
 
 If all drafts fail:
@@ -725,6 +755,8 @@ Rules:
 - Record full prompts and full candidate/verifier text only under
   `[fusion_reply.trace] level = "full"`.
 - WebUI must not fetch or display full fusion trace by default.
+- WebUI should continue to display selected-segment contribution, not final
+  stitch authorship, unless a separate editor badge is added later.
 - Add a future cleanup command or retention setting if trace volume becomes too
   large.
 
@@ -788,9 +820,8 @@ Instrument:
 - `_chat_specem`
 - `_draft_candidate`
 - `_verify_candidates`
-- `_weighted_scores`
+- `_anonymous_scores`
 - `_select_candidate`
-- `_updated_weights`
 
 Required events:
 
@@ -804,7 +835,8 @@ Required events:
 - `fusion.verify.result`
 - `fusion.aggregate`
 - `fusion.select`
-- `fusion.weights.update`
+- `fusion.stitch.request`
+- `fusion.stitch.result`
 - `fusion.end`
 
 ### Step 4: Attach compact summary to DoneEvent
@@ -854,7 +886,7 @@ Do not expose:
 - candidate text
 - raw verifier output
 - prompt text
-- weight updates
+- deprecated weight-update events
 
 ### Step 7: Tests
 
@@ -864,7 +896,9 @@ Add tests for:
 - JSONL trace event sequence for one-round fusion.
 - Draft success and verifier success record usage and latency.
 - Verifier parse fallback is recorded.
-- Weighted aggregate and selected member are recorded.
+- Anonymous aggregate scores and selected member are recorded.
+- Multi-segment fusion emits constrained stitch request/result events.
+- Empty or failed stitch output falls back to selected segment concat.
 - `fusion_summary.output_contribution` is stored in transcript usage.
 - WebUI uses only compact contribution fields.
 - Tool calls do not get fused and remain action-model only.
@@ -877,11 +911,13 @@ Add tests for:
 - Each fusion member has draft and verify participation recorded.
 - Each verifier's raw response, parsed scores, normalized scores, and ranking are
   recorded.
-- Aggregate weighted scores and selection reason are recorded.
+- Aggregate anonymous scores and selection reason are recorded.
+- Constrained final stitch, if applied, records editor, usage, latency, and
+  fallback status.
 - `fusion.end` includes per-member totals and final output contribution.
 - Transcript `turn_usage` includes compact `fusion_summary`.
 - WebUI displays only final output contribution by model.
-- WebUI does not display raw scores, weights, candidate text, or verifier text.
+- WebUI does not display raw scores, candidate text, or verifier text.
 - If one verifier fails, trace records the failure and fusion still completes.
 - If all verifiers fail, trace records deterministic fallback behavior.
 - Existing fusion behavior and final answer text remain unchanged.

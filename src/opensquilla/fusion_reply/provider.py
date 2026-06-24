@@ -1,16 +1,20 @@
-"""Provider wrapper implementing OpenSquilla's Fusion Reply mode.
+"""Provider wrapper implementing OpenSquilla's Fusion mode.
 
-The implementation follows the SpecEM shape at API level:
+The default architecture is Fusion Assist:
 
-1. OpenSquilla's normal action model decides and executes tool calls.
-2. Once the action model reaches a final text answer, Fusion Reply performs
-   iterative segment drafting, verification scoring, and online feedback over
-   the configured fusion members.
+1. Fusion members draft and verify hidden next-step advice with tools disabled.
+2. The selected advice is injected into the next action-model request.
+3. OpenSquilla's normal action model remains the only model that can call tools
+   and author user-visible text.
+
+The legacy final-answer fusion architecture remains available for direct
+text-only fusion experiments and explicit compatibility mode.
 
 The paper scores candidates with model logits and verify-in-line attention
 masks. Hosted chat APIs generally do not expose comparable logits or attention
-control, so the verification stage asks each model for normalized candidate
-scores in strict JSON and applies the same weighted aggregation/update logic.
+control, so the verification stage asks each model for normalized advice or
+segment candidate scores in strict JSON and aggregates anonymous verifier
+scores with equal verifier influence.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import re
 import string
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from opensquilla.engine.model_call_harness import (
@@ -76,6 +80,43 @@ Score each candidate segment by correctness, evidence use, instruction following
 helpfulness, and clarity. Return strict JSON only:
 {"scores":{"A":0.82,"B":0.55,"C":0.31},"ranking":["A","B","C"]}.
 Scores may be any non-negative numbers; they will be normalized after parsing.
+"""
+
+_ASSIST_DRAFT_SYSTEM = """OpenSquilla Fusion Assist candidate generation.
+Generate hidden next-step advice for the action model in the current agent loop.
+- Do not write the final user-visible answer.
+- Do not call tools or emit tool-call syntax.
+- The action model is the only model allowed to call tools.
+- Focus on what the action model should do next, why, and what risks to watch.
+- If a tool appears useful, recommend it in prose only; do not produce JSON tool arguments.
+Return concise advice in this shape:
+Task state: ...
+Recommended next step: ...
+Tool guidance: ...
+Answer guidance: ...
+Risks: ...
+Confidence: 0.0-1.0
+"""
+
+_ASSIST_VERIFY_SYSTEM = """You are an anonymous SpecEM verifier for OpenSquilla Fusion Assist.
+Score each hidden advice candidate by usefulness for the next action-model
+agent-loop step: correctness, tool guidance, context awareness, risk handling,
+and concision. Return strict JSON only:
+{"scores":{"A":0.82,"B":0.55,"C":0.31},"ranking":["A","B","C"]}.
+Scores may be any non-negative numbers; they will be normalized after parsing.
+"""
+
+_ASSIST_INJECTION_PREFIX = "Hidden Fusion Assist advice for this agent iteration:"
+
+_STITCH_SYSTEM = """OpenSquilla Fusion constrained final stitch editor.
+You are not generating a new answer from scratch.
+- Use only the selected segments provided by the fusion process.
+- Do not add new facts, numbers, sources, claims, or tool results.
+- Remove repetition, smooth transitions, and make the final answer coherent.
+- Preserve important caveats and uncertainty from the selected segments.
+- If selected segments conflict, state the uncertainty instead of inventing a resolution.
+- Do not mention Fusion, candidates, segments, judging, or other models.
+Return only the final user-visible answer.
 """
 
 
@@ -194,8 +235,31 @@ class _ScoreParseResult:
     fallback_used: bool
 
 
+@dataclass(frozen=True)
+class _AssistResult:
+    text: str
+    usage: _CallUsage
+    summary: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _SelectedSegment:
+    round_index: int
+    member: FusionMember
+    text: str
+
+
+@dataclass(frozen=True)
+class _StitchResult:
+    text: str
+    usage: _CallUsage
+    member: FusionMember | None = None
+    applied: bool = False
+    fallback_reason: str = ""
+
+
 class FusionReplyProvider:
-    """LLMProvider that keeps tools single-model and fuses final text with SpecEM."""
+    """LLMProvider that keeps tools single-model and adds Fusion Assist."""
 
     provider_name = "fusion_reply"
     finalize_artifact_delivery_with_provider = True
@@ -207,6 +271,8 @@ class FusionReplyProvider:
         action_provider: LLMProvider | None = None,
         action_member_id: str = "",
         action_model: str = "",
+        architecture: str = "agent_loop_assist",
+        assist_max_rounds: int = 1,
         max_rounds: int = 4,
         min_rounds: int = 2,
         step_max_tokens: int = 1024,
@@ -221,6 +287,12 @@ class FusionReplyProvider:
         self._action_provider = action_provider
         self._action_member_id = action_member_id
         self._action_model = action_model
+        self._architecture = (
+            "final_answer_fusion"
+            if action_provider is None
+            else _normalize_architecture(architecture)
+        )
+        self._assist_max_rounds = max(1, int(assist_max_rounds or 1))
         self._max_rounds = max(1, int(max_rounds or 4))
         self._min_rounds = min(
             self._max_rounds,
@@ -230,10 +302,14 @@ class FusionReplyProvider:
         self._judge_max_tokens = max(1, int(judge_max_tokens or 512))
         self._temperature = temperature
         self._judge_temperature = judge_temperature
-        self._feedback_alpha = max(float(feedback_alpha or 1.0), 0.0)
+        # Deprecated compatibility knob. Fusion now uses equal anonymous
+        # verifier scores instead of model weights or online feedback updates.
+        del feedback_alpha
         self._adaptive_segments = bool(adaptive_segments)
         self._trace_settings = trace_settings or FusionTraceSettings()
         self.model = self._fusion_model_id()
+        self._assist_trace: FusionTraceRecorder | None = None
+        self._assist_iterations = 0
 
     def chat(
         self,
@@ -251,6 +327,14 @@ class FusionReplyProvider:
         config: ChatConfig | None,
     ) -> AsyncIterator[StreamEvent]:
         base_config = config or ChatConfig()
+        if self._action_provider is not None and self._architecture == "agent_loop_assist":
+            async for event in self._chat_action_with_assist(
+                messages,
+                tools=tools,
+                config=base_config,
+            ):
+                yield event
+            return
         if self._action_provider is not None and tools:
             async for event in self._chat_action_then_fuse(
                 messages,
@@ -267,6 +351,59 @@ class FusionReplyProvider:
             seed_candidate=None,
         ):
             yield event
+
+    async def _chat_action_with_assist(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition] | None,
+        config: ChatConfig,
+    ) -> AsyncIterator[StreamEvent]:
+        """Run Fusion Assist before one normal action-model provider call."""
+
+        assist = await self._run_fusion_assist(messages, tools=tools, config=config)
+        action_messages = _messages_with_fusion_advice(messages, assist.text)
+        if assist.text:
+            trace = self._assist_trace
+            if trace is not None:
+                trace.emit(
+                    "fusion.assist.inject",
+                    fusion_iteration=self._assist_iterations,
+                    advice=(assist.text if trace.settings.include_candidate_text else None),
+                    action_model=self._action_model,
+                )
+        try:
+            stream = self._action_provider.chat(  # type: ignore[union-attr]
+                action_messages,
+                tools=tools,
+                config=config,
+            )
+            if inspect.isawaitable(stream):
+                stream = await stream
+            async for event in stream:
+                if isinstance(event, DoneEvent):
+                    summary = assist.summary
+                    action_usage = _CallUsage.from_done(event)
+                    combined_usage = _add_usage(assist.usage, action_usage)
+                    metadata = dict(event.metadata or {})
+                    if summary and self._trace_settings.expose_summary:
+                        metadata["fusion_summary"] = summary
+                    yield replace(
+                        event,
+                        input_tokens=combined_usage.input_tokens,
+                        output_tokens=combined_usage.output_tokens,
+                        reasoning_tokens=combined_usage.reasoning_tokens,
+                        cached_tokens=combined_usage.cached_tokens,
+                        billed_cost=combined_usage.billed_cost,
+                        cache_write_tokens=combined_usage.cache_write_tokens,
+                        cost_source=combined_usage.cost_source,
+                        metadata=metadata,
+                    )
+                    return
+                yield event
+        except Exception as exc:  # noqa: BLE001 - provider errors surface as stream events.
+            yield ErrorEvent(message=str(exc), code="fusion_reply_action_error")
+            return
 
     async def _chat_action_then_fuse(
         self,
@@ -367,9 +504,9 @@ class FusionReplyProvider:
             return
 
         trace = self._new_trace(config)
-        weights = self._initial_weights()
         aggregate_usage = initial_usage
         selected_parts: list[str] = []
+        selected_segments: list[_SelectedSegment] = []
         rounds_completed = 0
         segment_plan = (
             self._segment_plan(messages)
@@ -392,7 +529,6 @@ class FusionReplyProvider:
                     trace.emit(
                         "fusion.round.start",
                         round_index=round_index,
-                        weights=weights,
                         selected_chars=sum(len(part) for part in selected_parts),
                         segment_goal=(
                             segment_goal.as_dict() if segment_goal is not None else None
@@ -451,7 +587,7 @@ class FusionReplyProvider:
                         aggregate_usage,
                         *[verification.usage for verification in verifications],
                     )
-                    scores = self._weighted_scores(candidates, verifications, weights)
+                    scores = self._anonymous_scores(candidates, verifications)
                     if trace is not None:
                         trace.emit(
                             "fusion.aggregate",
@@ -459,22 +595,14 @@ class FusionReplyProvider:
                             verifier_results=[
                                 {
                                     "verifier_id": verification.verifier_id,
-                                    "weight": weights.get(verification.verifier_id, 1.0),
                                     "normalized_scores": verification.normalized_scores,
                                 }
                                 for verification in verifications
                             ],
-                            weighted_scores=scores,
+                            anonymous_scores=scores,
                         )
-                    selected = self._select_candidate(candidates, scores, weights)
+                    selected = self._select_candidate(candidates, scores)
 
-                previous_weights = weights
-                weights = self._updated_weights(
-                    round_index,
-                    candidates,
-                    verifications,
-                    weights,
-                )
                 selected_text, candidate_is_done = _strip_done_sentinel(selected.text)
                 selected_text = _prepare_selected_segment(selected_parts, selected_text)
                 done_ignored_reason = ""
@@ -500,22 +628,20 @@ class FusionReplyProvider:
                         segment_goal=(
                             segment_goal.as_dict() if segment_goal is not None else None
                         ),
-                        selection_reason=(
-                            "highest weighted score, then member weight, then candidate order"
-                        ),
-                        weighted_scores=scores,
-                    )
-                    trace.emit(
-                        "fusion.weights.update",
-                        round_index=round_index,
-                        weights_before=previous_weights,
-                        weights_after=weights,
+                        selection_reason="highest anonymous score, then candidate order",
+                        anonymous_scores=scores,
                     )
                     trace.record_selected(selected.member.id, selected_text)
                 rounds_completed = round_index + 1
                 if selected_text:
                     selected_parts.append(selected_text)
-                    yield TextDeltaEvent(text=selected_text)
+                    selected_segments.append(
+                        _SelectedSegment(
+                            round_index=round_index,
+                            member=selected.member,
+                            text=selected_text,
+                        )
+                    )
                 if is_done:
                     break
         except Exception as exc:  # noqa: BLE001 - provider errors surface as stream events.
@@ -528,11 +654,29 @@ class FusionReplyProvider:
             yield ErrorEvent(message=str(exc), code="fusion_reply_error")
             return
 
+        final_text = "".join(selected_parts)
+        if len([part for part in selected_parts if part.strip()]) > 1:
+            yield ProviderHeartbeatEvent(
+                phase="fusion_stitch",
+                message="SpecEM constrained final stitch",
+            )
+            stitch = await self._stitch_selected_segments(
+                messages,
+                selected_segments,
+                config,
+                trace=trace,
+            )
+            aggregate_usage = _add_usage(aggregate_usage, stitch.usage)
+            if stitch.applied:
+                final_text = stitch.text
+
         summary = (
             trace.finish(status="ok", rounds_completed=rounds_completed)
             if trace is not None
             else {}
         )
+        if final_text:
+            yield TextDeltaEvent(text=final_text)
         yield DoneEvent(
             stop_reason="end_turn",
             input_tokens=aggregate_usage.input_tokens,
@@ -548,6 +692,144 @@ class FusionReplyProvider:
                 if summary and self._trace_settings.expose_summary
                 else {}
             ),
+        )
+
+    async def _run_fusion_assist(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition] | None,
+        config: ChatConfig,
+    ) -> _AssistResult:
+        if not self._members:
+            return _AssistResult(text="", usage=_CallUsage(), summary={})
+
+        trace = self._assist_trace_for(config)
+        aggregate_usage = _CallUsage()
+        selected_advices: list[str] = []
+        fusion_iteration = self._assist_iterations + 1
+
+        if trace is not None:
+            trace.emit(
+                "fusion.assist.start",
+                fusion_iteration=fusion_iteration,
+                action_model=self._action_model,
+                tool_names=[tool.name for tool in tools or []],
+            )
+
+        try:
+            for assist_round in range(self._assist_max_rounds):
+                if trace is not None:
+                    trace.emit(
+                        "fusion.assist.round.start",
+                        fusion_iteration=fusion_iteration,
+                        round_index=assist_round,
+                    )
+                candidates = await asyncio.gather(
+                    *[
+                        self._draft_advice_candidate(
+                            member,
+                            index,
+                            fusion_iteration,
+                            assist_round,
+                            messages,
+                            tools,
+                            selected_advices,
+                            config,
+                            trace=trace,
+                        )
+                        for index, member in enumerate(self._members)
+                    ]
+                )
+                aggregate_usage = _add_usage(
+                    aggregate_usage,
+                    *[candidate.usage for candidate in candidates],
+                )
+
+                if len(candidates) == 1:
+                    selected = candidates[0]
+                    verifications: list[_Verification] = []
+                    scores = {selected.index: 1.0}
+                else:
+                    verifications = await asyncio.gather(
+                        *[
+                            self._verify_advice_candidates(
+                                member,
+                                fusion_iteration,
+                                assist_round,
+                                messages,
+                                tools,
+                                selected_advices,
+                                candidates,
+                                config,
+                                trace=trace,
+                            )
+                            for member in self._members
+                        ]
+                    )
+                    aggregate_usage = _add_usage(
+                        aggregate_usage,
+                        *[verification.usage for verification in verifications],
+                    )
+                    scores = self._anonymous_scores(candidates, verifications)
+                    if trace is not None:
+                        trace.emit(
+                            "fusion.assist.aggregate",
+                            fusion_iteration=fusion_iteration,
+                            round_index=assist_round,
+                            verifier_results=[
+                                {
+                                    "verifier_id": verification.verifier_id,
+                                    "normalized_scores": verification.normalized_scores,
+                                }
+                                for verification in verifications
+                            ],
+                            anonymous_scores=scores,
+                        )
+                    selected = self._select_candidate(candidates, scores)
+
+                selected_text = selected.text.strip()
+                if selected_text:
+                    selected_advices.append(selected_text)
+                if trace is not None:
+                    trace.emit(
+                        "fusion.assist.select",
+                        fusion_iteration=fusion_iteration,
+                        round_index=assist_round,
+                        selected_candidate_id=selected.index,
+                        selected_member_id=selected.member.id,
+                        selected_advice=(
+                            selected_text if trace.settings.include_candidate_text else None
+                        ),
+                        selection_reason="highest anonymous score, then candidate order",
+                        anonymous_scores=scores,
+                    )
+                    trace.record_selected_advice(selected.member.id, selected_text)
+        except Exception as exc:  # noqa: BLE001 - assist failures degrade to action-only.
+            summary = {}
+            if trace is not None:
+                trace.emit(
+                    "fusion.assist.error",
+                    fusion_iteration=fusion_iteration,
+                    error=str(exc),
+                )
+                summary = trace.finish(
+                    status="error",
+                    rounds_completed=self._assist_iterations,
+                    error=str(exc),
+                )
+            return _AssistResult(text="", usage=aggregate_usage, summary=summary)
+
+        self._assist_iterations = fusion_iteration
+        summary = (
+            trace.finish(status="ok", rounds_completed=self._assist_iterations)
+            if trace is not None
+            else {}
+        )
+        return _AssistResult(
+            text="\n\n".join(selected_advices).strip(),
+            usage=aggregate_usage,
+            summary=summary,
         )
 
     async def list_models(self) -> list[ModelInfo]:
@@ -775,6 +1057,274 @@ class FusionReplyProvider:
                 usage=verification.usage.as_dict(),
             )
         return verification
+
+    async def _draft_advice_candidate(
+        self,
+        member: FusionMember,
+        index: int,
+        fusion_iteration: int,
+        round_index: int,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        selected_advices: list[str],
+        base_config: ChatConfig,
+        *,
+        trace: FusionTraceRecorder | None,
+    ) -> _Candidate:
+        advice_messages = [
+            Message(
+                role="user",
+                content=self._assist_draft_prompt(messages, tools, selected_advices),
+            )
+        ]
+        call_config = self._call_config(
+            base_config,
+            system_suffix=_ASSIST_DRAFT_SYSTEM,
+            max_tokens=self._step_max_tokens,
+            temperature=self._temperature,
+            model_capabilities=member.model_capabilities,
+        )
+        if trace is not None:
+            trace.emit(
+                "fusion.assist.draft.request",
+                fusion_iteration=fusion_iteration,
+                round_index=round_index,
+                member_id=member.id,
+                provider=member.provider_id,
+                model=member.model,
+                request=(
+                    _trace_request(call_config, advice_messages)
+                    if trace.settings.include_prompts
+                    else None
+                ),
+            )
+        started = time.perf_counter()
+        harness_result = await collect_visible_text_with_harness(
+            member.provider,
+            advice_messages,
+            config=call_config,
+        )
+        usage = _CallUsage.from_harness(harness_result.usage)
+        candidate = _Candidate(
+            index=index,
+            member=member,
+            text=harness_result.text.strip(),
+            usage=usage,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        if trace is not None:
+            trace.emit(
+                "fusion.assist.draft.result",
+                fusion_iteration=fusion_iteration,
+                round_index=round_index,
+                candidate_id=index,
+                member_id=member.id,
+                text=(candidate.text if trace.settings.include_candidate_text else None),
+                usage=candidate.usage.as_dict(),
+                latency_ms=candidate.latency_ms,
+                harness=harness_result.trace_payload(),
+            )
+            trace.record_usage(member.id, stage="draft", usage=candidate.usage.as_dict())
+        return candidate
+
+    async def _verify_advice_candidates(
+        self,
+        verifier: FusionMember,
+        fusion_iteration: int,
+        round_index: int,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        selected_advices: list[str],
+        candidates: list[_Candidate],
+        base_config: ChatConfig,
+        *,
+        trace: FusionTraceRecorder | None,
+    ) -> _Verification:
+        labels = list(string.ascii_uppercase[: len(candidates)])
+        order = list(range(len(candidates)))
+        random.Random(f"assist:{fusion_iteration}:{round_index}:{verifier.id}").shuffle(order)
+        label_to_candidate = {
+            labels[position]: candidates[candidate_pos].index
+            for position, candidate_pos in enumerate(order)
+        }
+        prompt = self._assist_verification_prompt(
+            messages,
+            tools,
+            selected_advices,
+            [
+                (labels[position], candidates[candidate_pos].text)
+                for position, candidate_pos in enumerate(order)
+            ],
+        )
+        call_config = self._call_config(
+            base_config,
+            system_suffix=_ASSIST_VERIFY_SYSTEM,
+            max_tokens=self._judge_max_tokens,
+            temperature=self._judge_temperature,
+            model_capabilities=verifier.model_capabilities,
+        )
+        if trace is not None:
+            trace.emit(
+                "fusion.assist.anonymization",
+                fusion_iteration=fusion_iteration,
+                round_index=round_index,
+                verifier_id=verifier.id,
+                label_to_candidate=label_to_candidate,
+            )
+            trace.emit(
+                "fusion.assist.verify.request",
+                fusion_iteration=fusion_iteration,
+                round_index=round_index,
+                verifier_id=verifier.id,
+                provider=verifier.provider_id,
+                model=verifier.model,
+                label_to_candidate=label_to_candidate,
+                request=(
+                    _trace_request(call_config, [Message(role="user", content=prompt)])
+                    if trace.settings.include_prompts
+                    else None
+                ),
+            )
+        started = time.perf_counter()
+        harness_result = await collect_visible_text_with_harness(
+            verifier.provider,
+            [Message(role="user", content=prompt)],
+            config=call_config,
+        )
+        usage = _CallUsage.from_harness(harness_result.usage)
+        parsed = _parse_scores_detail(harness_result.text, label_to_candidate)
+        valid_ids = {candidate.index for candidate in candidates}
+        verification = _Verification(
+            verifier_id=verifier.id,
+            scores=parsed.scores,
+            usage=usage,
+            label_to_candidate=label_to_candidate,
+            raw_response=harness_result.text,
+            label_scores=parsed.label_scores,
+            ranking=parsed.ranking,
+            parse_mode=parsed.mode,
+            parse_fallback_used=parsed.fallback_used,
+            normalized_scores=_normalize_scores(parsed.scores, valid_ids),
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        if trace is not None:
+            trace.emit(
+                "fusion.assist.verify.result",
+                fusion_iteration=fusion_iteration,
+                round_index=round_index,
+                verifier_id=verifier.id,
+                raw_response=(
+                    verification.raw_response
+                    if trace.settings.include_verifier_text
+                    else None
+                ),
+                label_scores=verification.label_scores,
+                candidate_scores=verification.scores,
+                normalized_scores=verification.normalized_scores,
+                ranking=verification.ranking,
+                parse_mode=verification.parse_mode,
+                parse_fallback_used=verification.parse_fallback_used,
+                usage=verification.usage.as_dict(),
+                latency_ms=verification.latency_ms,
+                harness=harness_result.trace_payload(),
+            )
+            trace.record_usage(
+                verifier.id,
+                stage="verify",
+                usage=verification.usage.as_dict(),
+            )
+        return verification
+
+    async def _stitch_selected_segments(
+        self,
+        messages: list[Message],
+        selected_segments: list[_SelectedSegment],
+        base_config: ChatConfig,
+        *,
+        trace: FusionTraceRecorder | None,
+    ) -> _StitchResult:
+        editor = _stitch_editor_member(selected_segments)
+        if editor is None:
+            return _StitchResult(text="", usage=_CallUsage(), fallback_reason="no_segments")
+
+        prompt = self._stitch_prompt(messages, selected_segments)
+        call_config = self._call_config(
+            base_config,
+            system_suffix=_STITCH_SYSTEM,
+            max_tokens=_stitch_max_tokens(self._step_max_tokens, selected_segments),
+            temperature=0.0,
+            model_capabilities=editor.model_capabilities,
+        )
+        if trace is not None:
+            trace.emit(
+                "fusion.stitch.request",
+                editor_member_id=editor.id,
+                provider=editor.provider_id,
+                model=editor.model,
+                selected_segment_count=len(selected_segments),
+                selected_segments=[
+                    {
+                        "round_index": segment.round_index,
+                        "member_id": segment.member.id,
+                        "chars": len(segment.text or ""),
+                    }
+                    for segment in selected_segments
+                ],
+                request=(
+                    _trace_request(call_config, [Message(role="user", content=prompt)])
+                    if trace.settings.include_prompts
+                    else None
+                ),
+            )
+
+        started = time.perf_counter()
+        try:
+            harness_result = await collect_visible_text_with_harness(
+                editor.provider,
+                [Message(role="user", content=prompt)],
+                config=call_config,
+            )
+        except Exception as exc:  # noqa: BLE001 - stitch failure falls back to concat.
+            if trace is not None:
+                trace.emit(
+                    "fusion.stitch.result",
+                    editor_member_id=editor.id,
+                    status="error",
+                    fallback_reason=str(exc),
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                )
+            return _StitchResult(
+                text="",
+                usage=_CallUsage(),
+                member=editor,
+                fallback_reason=str(exc),
+            )
+
+        usage = _CallUsage.from_harness(harness_result.usage)
+        text = harness_result.text.strip()
+        applied = bool(text)
+        fallback_reason = "" if applied else "empty_stitch_output"
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        if trace is not None:
+            trace.emit(
+                "fusion.stitch.result",
+                editor_member_id=editor.id,
+                status="ok" if applied else "fallback",
+                applied=applied,
+                fallback_reason=fallback_reason,
+                final_text=(text if trace.settings.include_candidate_text else None),
+                usage=usage.as_dict(),
+                latency_ms=latency_ms,
+                harness=harness_result.trace_payload(),
+            )
+            trace.record_usage(editor.id, stage="stitch", usage=usage.as_dict())
+        return _StitchResult(
+            text=text,
+            usage=usage,
+            member=editor,
+            applied=applied,
+            fallback_reason=fallback_reason,
+        )
 
     def _call_config(
         self,
@@ -1028,67 +1578,121 @@ class FusionReplyProvider:
             'Return JSON exactly like {"scores":{"A":0.9,"B":0.4},"ranking":["A","B"]}.'
         )
 
-    def _weighted_scores(
+    def _stitch_prompt(
+        self,
+        messages: list[Message],
+        selected_segments: list[_SelectedSegment],
+    ) -> str:
+        conversation = _serialize_messages(messages[-8:])
+        segment_blocks = "\n\n".join(
+            (
+                f"Selected segment {index + 1}:\n"
+                f"{segment.text.strip() or '[empty segment]'}"
+            )
+            for index, segment in enumerate(selected_segments)
+        )
+        return (
+            "Create the final answer by stitching the selected segments below.\n"
+            "The selected segments are the only allowed factual source for the final answer.\n"
+            "Allowed edits: remove repetition, improve ordering, add short transition words, "
+            "normalize formatting, and make the prose coherent.\n"
+            "Forbidden edits: new facts, new sources, new numbers, new tool results, or "
+            "replacing the selected content with your own answer.\n\n"
+            f"Recent conversation for tone and user intent:\n{conversation}\n\n"
+            f"{segment_blocks}\n\n"
+            "Return the final stitched answer only."
+        )
+
+    def _assist_draft_prompt(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        selected_advices: list[str],
+    ) -> str:
+        user_request = _latest_user_text(messages)
+        conversation = _serialize_messages(messages[-8:])
+        tool_summary = _tool_summary(tools)
+        previous = "\n\n".join(selected_advices).strip()
+        previous_block = (
+            f"\nPreviously selected Fusion Assist advice in this turn:\n{previous}\n"
+            if previous
+            else ""
+        )
+        return (
+            "You are advising the OpenSquilla action model before its next "
+            "agent-loop LLM call. The advice is hidden from the user.\n\n"
+            f"Original user request:\n{user_request or '[not available]'}\n\n"
+            f"Recent conversation and tool state:\n{conversation}\n\n"
+            f"Available tools for the action model:\n{tool_summary}\n"
+            f"{previous_block}\n"
+            "Produce the best next-step advice for the action model. "
+            "Do not write the final answer unless your advice is that no more "
+            "tools are needed, in which case describe how the action model "
+            "should answer."
+        )
+
+    def _assist_verification_prompt(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        selected_advices: list[str],
+        labelled_candidates: list[tuple[str, str]],
+    ) -> str:
+        conversation = _serialize_messages(messages[-8:])
+        previous = "\n\n".join(selected_advices).strip()
+        previous_block = (
+            f"\nPreviously selected Fusion Assist advice in this turn:\n{previous}\n"
+            if previous
+            else ""
+        )
+        candidate_blocks = "\n\n".join(
+            f"Candidate {label}:\n{text or '[empty advice]'}"
+            for label, text in labelled_candidates
+        )
+        labels = ", ".join(label for label, _text in labelled_candidates)
+        return (
+            f"Recent conversation and tool state:\n{conversation}\n\n"
+            f"Available tools for the action model:\n{_tool_summary(tools)}\n"
+            f"{previous_block}\n"
+            f"Score these anonymous hidden advice candidates for the next "
+            f"action-model agent-loop step. Use only these labels: {labels}. "
+            "Higher is better. Prefer advice that helps the action model decide "
+            "whether to call a tool, interpret tool results, or answer now.\n\n"
+            f"{candidate_blocks}\n\n"
+            'Return JSON exactly like {"scores":{"A":0.9,"B":0.4},"ranking":["A","B"]}.'
+        )
+
+    def _anonymous_scores(
         self,
         candidates: list[_Candidate],
         verifications: list[_Verification],
-        weights: dict[str, float],
     ) -> dict[int, float]:
         valid_ids = {candidate.index for candidate in candidates}
         scores = {candidate.index: 0.0 for candidate in candidates}
         for verification in verifications:
             normalized = _normalize_scores(verification.scores, valid_ids)
-            verifier_weight = weights.get(verification.verifier_id, 1.0)
             for candidate_id, score in normalized.items():
-                scores[candidate_id] += verifier_weight * score
-        return scores
+                scores[candidate_id] += score
+        divisor = max(len(verifications), 1)
+        return {candidate_id: score / divisor for candidate_id, score in scores.items()}
 
     def _select_candidate(
         self,
         candidates: list[_Candidate],
         scores: dict[int, float],
-        weights: dict[str, float],
     ) -> _Candidate:
         return max(
             candidates,
             key=lambda candidate: (
                 scores.get(candidate.index, 0.0),
-                weights.get(candidate.member.id, 0.0),
                 -candidate.index,
             ),
         )
 
-    def _initial_weights(self) -> dict[str, float]:
-        weights = {
-            member.id: max(float(member.weight or 1.0), 0.001)
-            for member in self._members
-        }
-        total = sum(weights.values()) or 1.0
-        return {key: value / total for key, value in weights.items()}
-
-    def _updated_weights(
-        self,
-        round_index: int,
-        candidates: list[_Candidate],
-        verifications: list[_Verification],
-        weights: dict[str, float],
-    ) -> dict[str, float]:
-        rewards = _feedback_rewards(candidates, verifications)
-        if not rewards:
-            return weights
-        learning_rate = self._feedback_alpha * math.sqrt(1.0 / (round_index + 1)) / max(
-            len(candidates),
-            1,
-        )
-        updated = dict(weights)
-        for candidate in candidates:
-            reward = max(rewards.get(candidate.index, 0.0), 0.0)
-            updated[candidate.member.id] = max(
-                0.001,
-                weights.get(candidate.member.id, 0.001) * math.exp(learning_rate * reward),
-            )
-        total = sum(updated.values()) or 1.0
-        return {key: value / total for key, value in updated.items()}
+    def _assist_trace_for(self, config: ChatConfig) -> FusionTraceRecorder | None:
+        if self._assist_trace is None:
+            self._assist_trace = self._new_trace(config)
+        return self._assist_trace
 
     def _new_trace(self, config: ChatConfig) -> FusionTraceRecorder | None:
         if not (self._trace_settings.enabled or self._trace_settings.expose_summary):
@@ -1101,11 +1705,11 @@ class FusionReplyProvider:
                     "id": member.id,
                     "provider": member.provider_id,
                     "model": member.model,
-                    "initial_weight": member.weight,
                 }
                 for member in self._members
             ],
             action_model=self._action_model,
+            architecture=self._architecture,
             max_rounds=self._max_rounds,
             min_rounds=self._min_rounds,
         )
@@ -1131,6 +1735,74 @@ def _add_usage(base: _CallUsage, *items: _CallUsage) -> _CallUsage:
         billed_cost=base.billed_cost + sum(item.billed_cost for item in items),
         cost_source=cost_source,
     )
+
+
+def _normalize_architecture(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"", "agent_loop", "agent_loop_assist", "assist"}:
+        return "agent_loop_assist"
+    if normalized in {"final_answer", "final_answer_fusion", "legacy"}:
+        return "final_answer_fusion"
+    return "agent_loop_assist"
+
+
+def _messages_with_fusion_advice(messages: list[Message], advice: str) -> list[Message]:
+    cleaned = advice.strip()
+    if not cleaned:
+        return list(messages)
+    return [
+        *messages,
+        Message(
+            role="user",
+            content=(
+                f"{_ASSIST_INJECTION_PREFIX}\n"
+                f"{cleaned}\n\n"
+                "This advice is not user-visible. You are the only model allowed "
+                "to call tools. Use or ignore the advice as appropriate."
+            ),
+        ),
+    ]
+
+
+def _stitch_editor_member(segments: list[_SelectedSegment]) -> FusionMember | None:
+    if not segments:
+        return None
+    selected_chars: dict[str, int] = {}
+    members_by_id: dict[str, FusionMember] = {}
+    order: dict[str, int] = {}
+    for index, segment in enumerate(segments):
+        member_id = segment.member.id
+        selected_chars[member_id] = selected_chars.get(member_id, 0) + len(segment.text or "")
+        members_by_id[member_id] = segment.member
+        order.setdefault(member_id, index)
+    editor_id = max(
+        selected_chars,
+        key=lambda member_id: (
+            selected_chars.get(member_id, 0),
+            -order.get(member_id, 0),
+        ),
+    )
+    return members_by_id.get(editor_id)
+
+
+def _stitch_max_tokens(
+    step_max_tokens: int,
+    segments: list[_SelectedSegment],
+) -> int:
+    segment_count = max(len(segments), 1)
+    return max(step_max_tokens, min(4096, step_max_tokens * segment_count))
+
+
+def _tool_summary(tools: list[ToolDefinition] | None) -> str:
+    if not tools:
+        return "[no tools available]"
+    rows: list[str] = []
+    for tool in tools[:30]:
+        description = str(getattr(tool, "description", "") or "").strip()
+        rows.append(f"- {tool.name}: {description or 'no description'}")
+    if len(tools) > 30:
+        rows.append(f"- ... {len(tools) - 30} additional tools omitted")
+    return "\n".join(rows)
 
 
 def _strip_done_sentinel(text: str) -> tuple[str, bool]:
@@ -1362,31 +2034,6 @@ def _normalize_scores(scores: dict[int, float], valid_ids: set[int]) -> dict[int
         uniform = 1.0 / max(len(valid_ids), 1)
         return {idx: uniform for idx in valid_ids}
     return {idx: value / total for idx, value in cleaned.items()}
-
-
-def _feedback_rewards(
-    candidates: list[_Candidate],
-    verifications: list[_Verification],
-) -> dict[int, float]:
-    valid_ids = {candidate.index for candidate in candidates}
-    member_by_candidate = {candidate.index: candidate.member.id for candidate in candidates}
-    wins = {candidate.index: 0.0 for candidate in candidates}
-    total_wins = 0.0
-    for verification in verifications:
-        normalized = _normalize_scores(verification.scores, valid_ids)
-        for candidate in candidates:
-            if member_by_candidate[candidate.index] == verification.verifier_id:
-                continue
-            candidate_score = normalized.get(candidate.index, 0.0)
-            for other in candidates:
-                if other.index == candidate.index:
-                    continue
-                if candidate_score > normalized.get(other.index, 0.0):
-                    wins[candidate.index] += 1.0
-                    total_wins += 1.0
-    if total_wins <= 0:
-        return {}
-    return {idx: value / total_wins for idx, value in wins.items()}
 
 
 def _extract_json_object(text: str) -> str:

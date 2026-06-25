@@ -20,10 +20,9 @@ def test_gateway_config_accepts_fusion_reply_models() -> None:
             "reply": {"default_mode": "fusion"},
             "fusion_reply": {
                 "enabled": True,
-                "architecture": "agent_loop_assist",
-                "assist_max_rounds": 1,
+                "assist_max_segments": 3,
                 "models": [
-                    {"id": "a", "provider": "openrouter", "model": "model-a", "weight": 2.0},
+                    {"id": "a", "provider": "openrouter", "model": "model-a"},
                     {"id": "b", "provider": "openrouter", "model": "model-b"},
                 ],
                 "trace": {"log_dir": "D:/tmp/fusion-traces", "include_prompts": False},
@@ -33,13 +32,8 @@ def test_gateway_config_accepts_fusion_reply_models() -> None:
 
     assert cfg.reply.default_mode == "fusion"
     assert cfg.fusion_reply.enabled is True
-    assert cfg.fusion_reply.architecture == "agent_loop_assist"
-    assert cfg.fusion_reply.assist_max_rounds == 1
-    assert cfg.fusion_reply.max_rounds == 4
-    assert cfg.fusion_reply.min_rounds == 2
-    assert cfg.fusion_reply.adaptive_segments is True
+    assert cfg.fusion_reply.assist_max_segments == 3
     assert [m.id for m in cfg.fusion_reply.models] == ["a", "b"]
-    assert cfg.fusion_reply.models[0].weight == 2.0
     assert cfg.fusion_reply.trace.enabled is True
     assert cfg.fusion_reply.trace.level == "full"
     assert cfg.fusion_reply.trace.log_dir == "D:/tmp/fusion-traces"

@@ -176,7 +176,6 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     const hasTier = !!(u.routed_tier && u.routing_source && u.routing_source !== 'none')
     const turnSavedPct = typeof u.total_savings_pct === 'number' && u.total_savings_pct > 0 ? u.total_savings_pct : 0
     const hasSaved = hasTier && turnSavedPct > 0 && !u.__savings_ui_suppressed
-    const fusionMode = fusionSummaryMode(u.fusion_summary)
     const fusionContributions = fusionContributionMembers(u.fusion_summary)
     return {
       model,
@@ -192,52 +191,18 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       savedLabel: turnSavedPct > 0 ? `Saved ~${Math.round(turnSavedPct)}%` : 'Cost optimized',
       fusionContributions,
       fusionContributionLabel: fusionContributionLabel(fusionContributions),
-      fusionContributionTitle: fusionMode === 'assist' ? 'fusion assist participation' : 'final output contribution',
-      fusionAssistMode: fusionMode === 'assist',
+      fusionContributionTitle: 'fusion assist participation',
+      fusionAssistMode: !!fusionContributions?.length,
     }
-  }
-
-  function fusionSummaryMode(raw: unknown): 'assist' | 'legacy' {
-    if (!raw || typeof raw !== 'object') return 'legacy'
-    const summary = raw as Record<string, unknown>
-    return summary.architecture === 'agent_loop_assist' ? 'assist' : 'legacy'
   }
 
   function fusionContributionMembers(raw: unknown): FusionContributionMember[] | undefined {
     if (!raw || typeof raw !== 'object') return undefined
     const summary = raw as Record<string, unknown>
-    if (summary.architecture === 'agent_loop_assist') {
-      const participation = summary.assist_participation
-      if (!participation || typeof participation !== 'object') return undefined
-      const members = (participation as Record<string, unknown>).members
-      if (!Array.isArray(members)) return undefined
-      const parsed = members
-        .map(item => {
-          if (!item || typeof item !== 'object') return null
-          const source = item as Record<string, unknown>
-          const memberId = String(source.member_id || source.memberId || '')
-          const provider = String(source.provider || '')
-          const model = String(source.model || memberId)
-          const label = shortModelName(model || memberId) || memberId || 'model'
-          return {
-            memberId,
-            provider,
-            model,
-            label,
-            selectedSegments: 0,
-            selectedChars: 0,
-            share: 0,
-            draftCalls: Number(source.draft_calls || source.draftCalls || 0),
-            verifyCalls: Number(source.verify_calls || source.verifyCalls || 0),
-            selectedAdvice: Number(source.selected_advice || source.selectedAdvice || 0),
-          }
-        })
-        .filter((item): item is FusionContributionMember => !!item && !!item.memberId)
-      return parsed.length ? parsed : undefined
-    }
-    const outputContribution = summary.output_contribution
-    if (!outputContribution || typeof outputContribution !== 'object') return undefined
-    const members = (outputContribution as Record<string, unknown>).members
+    if (summary.architecture !== 'agent_loop_assist') return undefined
+    const participation = summary.assist_participation
+    if (!participation || typeof participation !== 'object') return undefined
+    const members = (participation as Record<string, unknown>).members
     if (!Array.isArray(members)) return undefined
     const parsed = members
       .map(item => {
@@ -247,18 +212,19 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         const provider = String(source.provider || '')
         const model = String(source.model || memberId)
         const label = shortModelName(model || memberId) || memberId || 'model'
-        const share = Math.max(0, Math.min(1, Number(source.share || 0)))
         return {
           memberId,
           provider,
           model,
           label,
-          selectedSegments: Number(source.selected_segments || source.selectedSegments || 0),
-          selectedChars: Number(source.selected_chars || source.selectedChars || 0),
-          share,
-          draftCalls: 0,
-          verifyCalls: 0,
-          selectedAdvice: 0,
+          selectedSegments: 0,
+          selectedChars: 0,
+          share: 0,
+          draftCalls: Number(source.draft_calls || source.draftCalls || 0),
+          verifyCalls: Number(source.verify_calls || source.verifyCalls || 0),
+          fusionCalls: Number(source.fusion_calls || source.fusionCalls || 0),
+          stitchCalls: Number(source.stitch_calls || source.stitchCalls || 0),
+          selectedAdvice: Number(source.selected_advice || source.selectedAdvice || 0),
         }
       })
       .filter((item): item is FusionContributionMember => !!item && !!item.memberId)
@@ -267,7 +233,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
 
   function fusionContributionLabel(members: FusionContributionMember[] | undefined): string | undefined {
     if (!members?.length) return undefined
-    if (members.some(member => member.draftCalls || member.verifyCalls || member.selectedAdvice)) {
+    if (members.some(member => member.draftCalls || member.verifyCalls || member.fusionCalls || member.stitchCalls || member.selectedAdvice)) {
       return 'Fusion assist'
     }
     const leader = members[0]

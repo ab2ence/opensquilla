@@ -125,7 +125,7 @@
                   >
                     <span class="msg-meta-popover__label" :title="member.model">{{ member.label }}</span>
                     <span v-if="message.meta.fusionAssistMode" class="msg-meta-popover__value">
-                      d{{ member.draftCalls }} / v{{ member.verifyCalls }} / s{{ member.selectedAdvice }}
+                      d{{ member.draftCalls }} / v{{ member.verifyCalls }} / f{{ member.fusionCalls }} / s{{ member.stitchCalls }}
                     </span>
                     <span v-else class="msg-meta-popover__value">{{ Math.round(member.share * 100) }}%</span>
                   </div>

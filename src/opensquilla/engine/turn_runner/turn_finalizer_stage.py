@@ -350,77 +350,42 @@ def _turn_usage_payload(
 def _compact_fusion_summary(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
-    architecture = str(raw.get("architecture") or "final_answer_fusion")
-    if architecture == "agent_loop_assist":
-        participation = raw.get("assist_participation")
-        if not isinstance(participation, dict):
-            return None
-        raw_members = participation.get("members")
-        if not isinstance(raw_members, list):
-            return None
-        members: list[dict[str, Any]] = []
-        for item in raw_members:
-            if not isinstance(item, dict):
-                continue
-            members.append(
-                {
-                    "member_id": str(item.get("member_id") or ""),
-                    "provider": str(item.get("provider") or ""),
-                    "model": str(item.get("model") or ""),
-                    "draft_calls": int(item.get("draft_calls", 0) or 0),
-                    "verify_calls": int(item.get("verify_calls", 0) or 0),
-                    "selected_advice": int(item.get("selected_advice", 0) or 0),
-                }
-            )
-        return {
-            "trace_id": str(raw.get("trace_id") or ""),
-            "architecture": "agent_loop_assist",
-            "algorithm": str(raw.get("algorithm") or "specem_anonymous_advice_score"),
-            "status": str(raw.get("status") or "ok"),
-            "assist_iterations": int(raw.get("assist_iterations", 0) or 0),
-            "rounds_completed": int(raw.get("rounds_completed", 0) or 0),
-            "member_count": int(raw.get("member_count", len(members)) or len(members)),
-            "action_model": str(raw.get("action_model") or ""),
-            "final_answer_author": str(raw.get("final_answer_author") or "action_model"),
-            "assist_participation": {
-                "basis": str(
-                    participation.get("basis") or "draft_verify_selected_advice"
-                ),
-                "members": members,
-            },
-        }
-    output_contribution = raw.get("output_contribution")
-    if not isinstance(output_contribution, dict):
+    if str(raw.get("architecture") or "") != "agent_loop_assist":
         return None
-    raw_members = output_contribution.get("members")
+    participation = raw.get("assist_participation")
+    if not isinstance(participation, dict):
+        return None
+    raw_members = participation.get("members")
     if not isinstance(raw_members, list):
         return None
     members: list[dict[str, Any]] = []
     for item in raw_members:
         if not isinstance(item, dict):
             continue
-        try:
-            share = float(item.get("share", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            share = 0.0
         members.append(
             {
                 "member_id": str(item.get("member_id") or ""),
                 "provider": str(item.get("provider") or ""),
                 "model": str(item.get("model") or ""),
-                "selected_segments": int(item.get("selected_segments", 0) or 0),
-                "selected_chars": int(item.get("selected_chars", 0) or 0),
-                "share": max(0.0, min(1.0, share)),
+                "draft_calls": int(item.get("draft_calls", 0) or 0),
+                "verify_calls": int(item.get("verify_calls", 0) or 0),
+                "fusion_calls": int(item.get("fusion_calls", 0) or 0),
+                "stitch_calls": int(item.get("stitch_calls", 0) or 0),
+                "selected_advice": int(item.get("selected_advice", 0) or 0),
             }
         )
     return {
         "trace_id": str(raw.get("trace_id") or ""),
+        "architecture": "agent_loop_assist",
+        "algorithm": str(raw.get("algorithm") or "specem_anonymous_advice_score"),
         "status": str(raw.get("status") or "ok"),
-        "algorithm": str(raw.get("algorithm") or "specem_anonymous_segment_score"),
+        "assist_iterations": int(raw.get("assist_iterations", 0) or 0),
         "rounds_completed": int(raw.get("rounds_completed", 0) or 0),
         "member_count": int(raw.get("member_count", len(members)) or len(members)),
-        "output_contribution": {
-            "basis": str(output_contribution.get("basis") or "selected_output_chars"),
+        "action_model": str(raw.get("action_model") or ""),
+        "final_answer_author": str(raw.get("final_answer_author") or "action_model"),
+        "assist_participation": {
+            "basis": str(participation.get("basis") or "draft_verify_selected_advice_segments"),
             "members": members,
         },
     }

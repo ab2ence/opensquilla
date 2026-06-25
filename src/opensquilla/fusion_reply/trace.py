@@ -1,4 +1,4 @@
-"""Trace recording for OpenSquilla Fusion Reply experiments."""
+"""Trace recording for OpenSquilla Fusion Assist experiments."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class FusionTraceSettings:
 
 
 class FusionTraceRecorder:
-    """Append-only JSONL trace writer plus compact final contribution summary."""
+    """Append-only JSONL trace writer plus compact assist participation summary."""
 
     def __init__(
         self,
@@ -54,16 +54,13 @@ class FusionTraceRecorder:
         metadata: Mapping[str, Any] | None,
         members: list[Mapping[str, Any]],
         action_model: str,
-        max_rounds: int,
-        architecture: str = "final_answer_fusion",
-        min_rounds: int = 1,
+        assist_max_segments: int,
     ) -> None:
         self.settings = settings
         self.trace_id = str(uuid.uuid4())
         self.metadata = dict(metadata or {})
         self.path = _trace_path(settings) if settings.enabled and settings.write_jsonl else None
         self._members = [dict(member) for member in members]
-        self._architecture = str(architecture or "final_answer_fusion")
         self._action_model = action_model
         self._member_stats: dict[str, dict[str, Any]] = {}
         for member in self._members:
@@ -74,9 +71,9 @@ class FusionTraceRecorder:
                 "model": str(member.get("model") or ""),
                 "draft_calls": 0,
                 "verify_calls": 0,
+                "fusion_calls": 0,
                 "stitch_calls": 0,
                 "selected_advice": 0,
-                "selected_segments": 0,
                 "selected_chars": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -87,10 +84,9 @@ class FusionTraceRecorder:
             }
         self.emit(
             "fusion.start",
-            architecture=self._architecture,
+            architecture="agent_loop_assist",
             action_model=action_model,
-            max_rounds=max_rounds,
-            min_rounds=min_rounds,
+            assist_max_segments=assist_max_segments,
             members=self._members,
             trace_level=settings.level,
         )
@@ -129,6 +125,8 @@ class FusionTraceRecorder:
             stats["draft_calls"] += 1
         elif stage == "verify":
             stats["verify_calls"] += 1
+        elif stage == "fusion":
+            stats["fusion_calls"] += 1
         elif stage == "stitch":
             stats["stitch_calls"] += 1
         for key in (
@@ -143,13 +141,6 @@ class FusionTraceRecorder:
             usage.get("billed_cost", 0.0) or 0.0
         )
 
-    def record_selected(self, member_id: str, text: str) -> None:
-        stats = self._member_stats.get(member_id)
-        if stats is None:
-            return
-        stats["selected_segments"] += 1
-        stats["selected_chars"] += len(text or "")
-
     def record_selected_advice(self, member_id: str, text: str) -> None:
         stats = self._member_stats.get(member_id)
         if stats is None:
@@ -158,41 +149,6 @@ class FusionTraceRecorder:
         stats["selected_chars"] += len(text or "")
 
     def summary(self, *, rounds_completed: int) -> dict[str, Any]:
-        if self._architecture == "agent_loop_assist":
-            return self._assist_summary(rounds_completed=rounds_completed)
-        total_chars = sum(
-            int(stats.get("selected_chars", 0) or 0)
-            for stats in self._member_stats.values()
-        )
-        members: list[dict[str, Any]] = []
-        for member in self._members:
-            member_id = str(member.get("id") or "")
-            stats = self._member_stats.get(member_id, {})
-            selected_chars = int(stats.get("selected_chars", 0) or 0)
-            members.append(
-                {
-                    "member_id": member_id,
-                    "provider": str(member.get("provider") or ""),
-                    "model": str(member.get("model") or ""),
-                    "selected_segments": int(stats.get("selected_segments", 0) or 0),
-                    "selected_chars": selected_chars,
-                    "share": (selected_chars / total_chars) if total_chars > 0 else 0.0,
-                }
-            )
-        members.sort(key=lambda item: (-float(item["share"]), str(item["member_id"])))
-        return {
-            "trace_id": self.trace_id,
-            "architecture": self._architecture,
-            "algorithm": "specem_anonymous_segment_score",
-            "rounds_completed": rounds_completed,
-            "member_count": len(members),
-            "output_contribution": {
-                "basis": "selected_output_chars",
-                "members": members,
-            },
-        }
-
-    def _assist_summary(self, *, rounds_completed: int) -> dict[str, Any]:
         members: list[dict[str, Any]] = []
         for member in self._members:
             member_id = str(member.get("id") or "")
@@ -204,6 +160,8 @@ class FusionTraceRecorder:
                     "model": str(member.get("model") or ""),
                     "draft_calls": int(stats.get("draft_calls", 0) or 0),
                     "verify_calls": int(stats.get("verify_calls", 0) or 0),
+                    "fusion_calls": int(stats.get("fusion_calls", 0) or 0),
+                    "stitch_calls": int(stats.get("stitch_calls", 0) or 0),
                     "selected_advice": int(stats.get("selected_advice", 0) or 0),
                     "input_tokens": int(stats.get("input_tokens", 0) or 0),
                     "output_tokens": int(stats.get("output_tokens", 0) or 0),
@@ -230,7 +188,7 @@ class FusionTraceRecorder:
             "action_model": self._action_model,
             "final_answer_author": "action_model",
             "assist_participation": {
-                "basis": "draft_verify_selected_advice",
+                "basis": "draft_verify_selected_advice_segments",
                 "members": members,
             },
         }
@@ -238,9 +196,8 @@ class FusionTraceRecorder:
     def finish(self, *, status: str, rounds_completed: int, error: str = "") -> dict[str, Any]:
         summary = self.summary(rounds_completed=rounds_completed)
         summary["status"] = status
-        event = "fusion.assist.end" if self._architecture == "agent_loop_assist" else "fusion.end"
         self.emit(
-            event,
+            "fusion.assist.end",
             status=status,
             error=error,
             rounds_completed=rounds_completed,

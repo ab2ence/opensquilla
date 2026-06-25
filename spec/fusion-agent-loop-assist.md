@@ -268,22 +268,41 @@ The SpecEM-like algorithm should operate over next-step advice rather than
 final answer segments:
 
 ```text
-Each Fusion member drafts one advice candidate
+Action model plans semantic hidden advice segments with tools disabled
+->
+For each segment, each Fusion member drafts one candidate
 ->
 Candidates are anonymized
 ->
-Fusion members verify anonymous candidates
+Fusion members verify anonymous candidates for that segment
 ->
 Anonymous verifier scores are aggregated equally
 ->
-Best advice is selected for this agent iteration
+Constrained segment fusion produces one complete fused segment
 ->
-The Agent loop proceeds with the selected hidden advice
+If 2+ fused segments exist, constrained final stitch produces hidden advice
+->
+The Agent loop proceeds with the selected hidden advice segments
 ```
 
-The "segment" unit becomes "agent iteration advice". A multi-step task naturally
-creates multiple fused units because the Agent loop calls the provider multiple
-times after tool results.
+The segment unit is a semantic hidden-advice slot, not a final answer chunk and
+not a token window. A multi-step task creates multiple fused groups because the
+Agent loop calls the provider again after tool results; each call may itself
+contain multiple hidden advice segments.
+
+The segment plan is not provider-side keyword logic. It is produced by the
+action model through the OpenSquilla harness before the next action-model call.
+The planner call cannot use tools or author visible output; it only returns the
+hidden-advice segment schema for this specific agent-loop state. If planning
+fails or returns invalid JSON, a small generic safety fallback may be used and
+must be marked in trace.
+
+Raw draft candidates must not be injected into the action model. Segment fuser
+output is the completeness gate for each segment: if candidates are incomplete,
+the fuser should produce a shorter complete advice segment using only supported
+candidate content. If the fuser fails or returns empty text, Fusion should use a
+conservative complete fallback segment rather than the highest-scoring raw
+candidate.
 
 ## Anonymous Score Semantics
 
@@ -292,7 +311,7 @@ Fusion selection should be based only on anonymous verifier scores:
 - each verifier receives anonymized candidate labels;
 - each verifier returns normalized scores/ranking for the candidates;
 - all verifier score sheets have equal influence;
-- model configuration `weight` values are ignored by selection;
+- model configuration does not include Fusion weights;
 - no online weight update is performed between Agent loop iterations.
 
 Tie-break order should be deterministic: highest anonymous aggregate score,
@@ -305,22 +324,33 @@ Backend trace must distinguish these concepts:
 - action model LLM call
 - action model tool call
 - tool result
+- Fusion semantic advice segment plan
 - Fusion draft participation
 - Fusion verify participation
-- selected Fusion advice
+- fused Fusion advice segment
+- constrained hidden-advice stitch result
 - injected hidden advice
 - final answer author
 
 Recommended event kinds:
 
 - `fusion.assist.start`
+- `fusion.assist.segment_plan.request`
+- `fusion.assist.segment_plan.result`
+- `fusion.assist.segment_plan`
+- `fusion.assist.segment.start`
 - `fusion.assist.draft.request`
 - `fusion.assist.draft.result`
 - `fusion.assist.anonymization`
 - `fusion.assist.verify.request`
 - `fusion.assist.verify.result`
 - `fusion.assist.aggregate`
+- `fusion.assist.segment_fuse.request`
+- `fusion.assist.segment_fuse.result`
 - `fusion.assist.select`
+- `fusion.assist.stitch.skipped`
+- `fusion.assist.stitch.request`
+- `fusion.assist.stitch.result`
 - `fusion.assist.inject`
 - `fusion.assist.end`
 
@@ -332,6 +362,7 @@ Each event should include:
 - `agent_id`
 - `agent_iteration`
 - `fusion_iteration`
+- `segment_index` and `segment_goal` when applicable
 - `action_model`
 - `member_id` or `verifier_id` when applicable
 - usage, latency, cost, status, parse mode, and errors when applicable
@@ -377,28 +408,21 @@ Keep the user-facing mode:
 default_mode = "fusion"
 ```
 
-Add or reinterpret Fusion config with an explicit architecture field:
+Fusion config:
 
 ```toml
 [fusion_reply]
 enabled = true
-architecture = "agent_loop_assist"
 action_provider = "openrouter"
 action_model = "deepseek/deepseek-v4-flash"
-assist_max_rounds = 1
+assist_max_segments = 6
 judge_max_tokens = 512
 temperature = 0.4
 judge_temperature = 0.0
-inject_strategy = "ephemeral_hidden_context"
 ```
 
-Supported `architecture` values:
-
-- `agent_loop_assist`: target architecture from this spec.
-- `final_answer_fusion`: legacy behavior, deprecated for this experiment.
-
-For this experiment, `agent_loop_assist` should be the default whenever
-`reply_mode = "fusion"`.
+`reply_mode = "fusion"` always means `agent_loop_assist` for this experiment.
+There is no user-facing `architecture` switch and no final-answer fusion path.
 
 ## Implementation Plan
 
@@ -416,9 +440,7 @@ The external `reply_mode = "fusion"` can remain unchanged.
 
 ### Step 2: Move Fusion before the action provider call
 
-Current behavior waits until action model final text before calling SpecEM.
-
-Required behavior:
+Target behavior:
 
 ```text
 provider.chat(messages, tools, config)
@@ -432,7 +454,7 @@ action_provider.chat(messages_with_advice, tools, config)
 return action provider events directly to Agent
 ```
 
-Do not call final-answer `_chat_specem(...)` after action final text.
+Do not run a second final-answer Fusion pass after action final text.
 
 ### Step 3: Preserve native Agent loop behavior
 
@@ -480,6 +502,11 @@ Add tests for:
 
 - Fusion runs before action provider call.
 - Fusion selected advice is present in the action provider request.
+- Fusion plans semantic hidden advice segments.
+- Each segment is fused by constrained segment fusion after anonymous scoring.
+- If there are two or more fused segments, constrained final stitch deduplicates,
+  connects, and normalizes formatting without adding facts, sources, numbers, or
+  tool results.
 - Fusion advice is not persisted as a transcript message.
 - Fusion calls have tools disabled.
 - Action provider still receives tools enabled.
@@ -488,10 +515,13 @@ Add tests for:
 - Final visible answer comes from the action model.
 - Router is not invoked in fusion mode.
 - Trace records each Fusion assist iteration.
+- Trace records each Fusion assist segment plan, segment fusion, and final stitch.
 
 ## Acceptance Criteria
 
 - In `reply_mode = "fusion"`, Fusion runs before each action-model LLM call.
+- Each Fusion call plans semantic hidden advice segments up to
+  `assist_max_segments`.
 - A task with two tool iterations produces at least two Fusion assist traces.
 - The action model remains the only model that emits tool calls.
 - Tool results are appended by the existing Agent loop and feed the next
@@ -500,18 +530,14 @@ Add tests for:
 - Fusion advice is visible in backend trace but not in the chat transcript.
 - WebUI does not show Fusion member final-output contribution for this mode.
 - Existing direct/direct-router behavior is unchanged outside fusion mode.
-- Legacy final-answer fusion can be disabled or marked deprecated.
+- Legacy final-answer fusion is removed from this experiment path.
 
 ## Open Questions
 
-- Should `final_answer_fusion` remain available behind an explicit config flag,
-  or should it be removed entirely for this experiment?
 - Should Fusion run before every action-model request, or only when the task is
   classified as complex or uncertain?
 - Should verifier members include the action model itself, or only non-action
   Fusion members?
-- Should selected advice be one candidate verbatim, or should a final synthesis
-  model compress multiple useful candidates into one advice block?
 - Should WebUI show only an enabled badge, or also compact draft/verify/selected
   counts?
 - How much of the available tool schema should be included in Fusion prompts to
@@ -527,7 +553,8 @@ Add tests for:
   - `moonshotai/kimi-k2.7-code`
 - Fusion calls: tools disabled.
 - Action calls: tools enabled.
-- Assist rounds per Agent iteration: 1.
+- Assist segments per Agent iteration: 6 for the current experiment, capped by
+  `assist_max_segments`.
 - Verifier mode: anonymous pairwise/ranking scores.
 - Trace level: full.
 - WebUI: show Fusion assist participation, not final output contribution.

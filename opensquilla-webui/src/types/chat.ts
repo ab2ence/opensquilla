@@ -170,6 +170,8 @@ export interface FusionContributionMember {
   share: number
   draftCalls: number
   verifyCalls: number
+  fusionCalls: number
+  stitchCalls: number
   selectedAdvice: number
 }
 

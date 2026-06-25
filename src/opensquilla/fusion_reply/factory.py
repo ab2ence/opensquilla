@@ -52,7 +52,6 @@ def build_fusion_reply_provider(config: Any) -> FusionReplyProvider:
     action_provider = ModelSelector(SelectorConfig(primary=action_provider_cfg)).resolve()
     model_catalog = ModelCatalog()
     members: list[FusionMember] = []
-    action_member_id = ""
     for index, entry in enumerate(entries):
         provider_id = _entry_text(entry, "provider") or llm_runtime.provider
         model = _entry_text(entry, "model")
@@ -79,27 +78,19 @@ def build_fusion_reply_provider(config: Any) -> FusionReplyProvider:
                 provider_id=provider_id,
                 model=model,
                 provider=provider,
-                weight=_entry_float(entry, "weight", 1.0),
                 model_capabilities=model_capabilities,
             )
         )
-        if not action_member_id and provider_id == action_provider_id and model == action_model:
-            action_member_id = member_id
 
     return FusionReplyProvider(
         members,
         action_provider=action_provider,
-        action_member_id=action_member_id,
         action_model=action_model,
-        architecture=_entry_text(fusion_cfg, "architecture") or "agent_loop_assist",
-        assist_max_rounds=int(getattr(fusion_cfg, "assist_max_rounds", 1) or 1),
-        max_rounds=int(getattr(fusion_cfg, "max_rounds", 4) or 4),
-        min_rounds=int(getattr(fusion_cfg, "min_rounds", 2) or 2),
+        assist_max_segments=int(getattr(fusion_cfg, "assist_max_segments", 4) or 4),
         step_max_tokens=int(getattr(fusion_cfg, "step_max_tokens", 1024) or 1024),
         judge_max_tokens=int(getattr(fusion_cfg, "judge_max_tokens", 512) or 512),
         temperature=_optional_float(getattr(fusion_cfg, "temperature", 0.7)),
         judge_temperature=_optional_float(getattr(fusion_cfg, "judge_temperature", 0.0)),
-        adaptive_segments=bool(getattr(fusion_cfg, "adaptive_segments", True)),
         trace_settings=FusionTraceSettings.from_config(getattr(fusion_cfg, "trace", None)),
     )
 
@@ -150,14 +141,6 @@ def _entry_text(entry: Any, key: str) -> str:
     if value is None:
         return ""
     return str(value).strip()
-
-
-def _entry_float(entry: Any, key: str, default: float) -> float:
-    value = _entry_value(entry, key)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _optional_float(value: Any) -> float | None:

@@ -2222,6 +2222,23 @@ async def start_gateway_server(
     _pid_lock = GatewayPidLock(_state_path(config, ""))
     _pid_lock.acquire()
 
+    # Anonymous install telemetry is best-effort: it must never block gateway
+    # startup. The built-in endpoint is intentionally empty until configured.
+    try:
+        from opensquilla.observability.install_telemetry import collect_install_telemetry
+
+        result = collect_install_telemetry(config=config)
+        log.debug(
+            "gateway.install_telemetry",
+            skipped_reason=result.skipped_reason,
+            event=result.event,
+            sent=result.sent,
+            uploaded=result.uploaded,
+            endpoint_configured=result.endpoint_configured,
+        )
+    except Exception:
+        log.debug("gateway.install_telemetry_skipped", exc_info=True)
+
     # ── Reusable service initialization via build_services ───────────
     svc = await build_services(
         config=config,

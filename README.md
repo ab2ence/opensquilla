@@ -41,6 +41,50 @@ For task-oriented product documentation, start with the
 
 ---
 
+## Anonymous Installation Telemetry
+
+OpenSquilla includes anonymous installation telemetry to estimate install
+counts, version distribution, and runtime compatibility. The telemetry path
+is enabled by default. This source tree currently leaves the built-in
+telemetry endpoint empty; when no endpoint is configured, OpenSquilla only
+creates the local anonymous install state and sends no network request.
+
+When `OPENSQUILLA_TELEMETRY_ENDPOINT` is configured, the gateway sends a
+best-effort install event on first startup and one version event the first
+time each OpenSquilla version runs. Uploads use a short timeout and never
+block startup.
+
+The telemetry payload contains only:
+
+- random `install_id`
+- OpenSquilla version
+- event type (`install` or `version_seen`)
+- install method (`pip`, `source`, `docker`, `desktop`, or `unknown`)
+- operating system, OS version, CPU architecture, and Python major/minor
+  version
+- first-seen and sent timestamps
+
+The telemetry payload does not include usernames, email addresses, hostnames,
+local paths, API keys, provider configuration, chat history, session data,
+memory, agent content, file names, or file contents. HTTP servers can
+technically observe source IP addresses at the transport/logging layer; IP
+addresses are not part of the telemetry payload and should not be used as an
+install-count field by the collector.
+
+Disable telemetry with:
+
+```sh
+OPENSQUILLA_TELEMETRY_DISABLED=true
+```
+
+Point telemetry at a collector you control with:
+
+```sh
+OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install
+```
+
+---
+
 ## Installation
 
 OpenSquilla runs on Windows, macOS, and Linux. Pick the path that

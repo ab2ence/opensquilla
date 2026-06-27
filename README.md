@@ -45,14 +45,12 @@ For task-oriented product documentation, start with the
 
 OpenSquilla includes anonymous installation telemetry to estimate install
 counts, version distribution, and runtime compatibility. The telemetry path
-is enabled by default. This source tree currently leaves the built-in
-telemetry endpoint empty; when no endpoint is configured, OpenSquilla only
-creates the local anonymous install state and sends no network request.
+is enabled by default and sends to the official OpenSquilla telemetry collector.
 
-When `OPENSQUILLA_TELEMETRY_ENDPOINT` is configured, the gateway sends a
-best-effort install event on first startup and one version event the first
-time each OpenSquilla version runs. Uploads use a short timeout and never
-block startup.
+The gateway sends a best-effort install event on first startup and one version
+event the first time each OpenSquilla version runs. This covers source, pip,
+Docker, and desktop installs when they start the gateway. Uploads use a short
+timeout and never block startup.
 
 The telemetry payload contains only:
 

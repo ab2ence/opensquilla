@@ -1,9 +1,8 @@
 """Anonymous installation telemetry.
 
 The telemetry surface is intentionally narrow: it tracks installation instances
-and version distribution, not users. The default endpoint is empty until an
-official collector is configured, so the module records local state without
-sending network traffic by default.
+and version distribution, not users. The default endpoint points at the official
+OpenSquilla collector and can be overridden or disabled by environment variable.
 """
 
 from __future__ import annotations
@@ -31,10 +30,7 @@ TELEMETRY_DISABLED_ENV = "OPENSQUILLA_TELEMETRY_DISABLED"
 TELEMETRY_ENDPOINT_ENV = "OPENSQUILLA_TELEMETRY_ENDPOINT"
 TELEMETRY_INSTALL_METHOD_ENV = "OPENSQUILLA_INSTALL_METHOD"
 
-# Intentionally blank for now. When an official collector exists, this can
-# become the built-in default while still allowing TELEMETRY_ENDPOINT_ENV to
-# override it.
-DEFAULT_TELEMETRY_ENDPOINT = ""
+DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.opensquilla.ai/v1/install"
 DEFAULT_TIMEOUT_SECONDS = 2.0
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}

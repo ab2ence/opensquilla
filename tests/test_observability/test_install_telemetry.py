@@ -7,15 +7,52 @@ from typing import Any
 from opensquilla.observability import install_telemetry as telemetry
 
 TEST_ENDPOINT = "https://telemetry.example.test/v1/install"
+PRODUCTION_ENDPOINT = "https://telemetry.opensquilla.ai/v1/install"
 
 
 def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_default_endpoint_uploads_install_once_and_dedupes(tmp_path, monkeypatch):
+    monkeypatch.delenv(telemetry.TELEMETRY_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv(telemetry.TELEMETRY_DISABLED_ENV, raising=False)
+    state_path = tmp_path / "install_telemetry.json"
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_post(
+        endpoint: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> tuple[bool, str | None]:
+        calls.append((endpoint, payload))
+        return True, None
+
+    monkeypatch.setattr(telemetry, "_post_payload", fake_post)
+
+    first = telemetry.collect_install_telemetry(state_path=state_path, version="1.0.0")
+    second = telemetry.collect_install_telemetry(state_path=state_path, version="1.0.0")
+
+    assert first.sent is True
+    assert first.uploaded is True
+    assert first.event == "install"
+    assert second.sent is False
+    assert second.skipped_reason == "already_uploaded"
+    assert len(calls) == 1
+    endpoint, payload = calls[0]
+    assert endpoint == PRODUCTION_ENDPOINT
+    assert payload["event"] == "install"
+    assert payload["opensquilla_version"] == "1.0.0"
+    state = _load(state_path)
+    assert state["uploaded_install"] is True
+    assert state["uploaded_versions"] == ["1.0.0"]
+
+
 def test_endpoint_empty_creates_install_id_without_upload(tmp_path, monkeypatch):
     monkeypatch.delenv(telemetry.TELEMETRY_ENDPOINT_ENV, raising=False)
     monkeypatch.delenv(telemetry.TELEMETRY_DISABLED_ENV, raising=False)
+    monkeypatch.setattr(telemetry, "DEFAULT_TELEMETRY_ENDPOINT", "")
     state_path = tmp_path / "install_telemetry.json"
 
     result = telemetry.collect_install_telemetry(state_path=state_path, version="1.0.0")

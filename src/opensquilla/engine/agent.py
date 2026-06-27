@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -556,6 +557,15 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
         tool_choice=chat_cfg.tool_choice,
         metadata=_fusion_trace_chat_metadata(chat_cfg.metadata),
     )
+
+
+def _strict_thinking_required() -> bool:
+    return os.environ.get("OPENSQUILLA_STRICT_THINKING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _fusion_trace_chat_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
@@ -2504,6 +2514,7 @@ class Agent:
                                 if (
                                     thinking_enabled
                                     and not _thinking_fallback_done
+                                    and not _strict_thinking_required()
                                     and ("thinking" in _err_lower or "reasoning" in _err_lower)
                                 ):
                                     _thinking_fallback_done = True
@@ -2681,6 +2692,7 @@ class Agent:
                                 == _ProviderAttemptKind.REASONING_ONLY
                                 and thinking_enabled
                                 and not _thinking_fallback_done
+                                and not _strict_thinking_required()
                                 and _retry_policy.can_retry_attempt(
                                     _ProviderAttemptKind.REASONING_ONLY,
                                     _attempt_retries_used,

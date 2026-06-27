@@ -451,13 +451,31 @@ def _synthesize_text_tool_events(
     return events
 
 
-def _build_openai_tool(tool: ToolDefinition) -> dict[str, Any]:
+def _schema_with_array_items(schema: Any) -> Any:
+    """Return a schema copy acceptable to providers that require array items."""
+
+    if isinstance(schema, list):
+        return [_schema_with_array_items(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    normalized = {key: _schema_with_array_items(value) for key, value in schema.items()}
+    schema_type = normalized.get("type")
+    if schema_type == "array" and "items" not in normalized:
+        normalized["items"] = {"type": "string"}
+    return normalized
+
+
+def _build_openai_tool(tool: ToolDefinition, *, normalize_array_items: bool = False) -> dict[str, Any]:
+    parameters = tool.input_schema.model_dump(exclude_none=True)
+    if normalize_array_items:
+        parameters = _schema_with_array_items(parameters)
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.input_schema.model_dump(exclude_none=True),
+            "parameters": parameters,
         },
     }
 
@@ -468,6 +486,11 @@ def _openrouter_model_likely_supports_explicit_prompt_cache(model: str) -> bool:
 
 def _openrouter_model_is_anthropic(model: str) -> bool:
     return model.strip().lower().startswith("anthropic/")
+
+
+def _openrouter_model_uses_google_tool_schema(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith("google/") or normalized.startswith("gemini/")
 
 
 def _openrouter_anthropic_should_use_top_level_cache(
@@ -799,7 +822,14 @@ class OpenAIProvider:
         if cfg.stop_sequences:
             payload["stop"] = cfg.stop_sequences
         if tools:
-            payload["tools"] = [_build_openai_tool(t) for t in tools]
+            normalize_array_items = (
+                self._provider_kind == "openrouter"
+                and _openrouter_model_uses_google_tool_schema(self._model)
+            )
+            payload["tools"] = [
+                _build_openai_tool(t, normalize_array_items=normalize_array_items)
+                for t in tools
+            ]
             if cfg.tool_choice is not None:
                 payload["tool_choice"] = cfg.tool_choice
         if self._provider_kind == "openrouter":

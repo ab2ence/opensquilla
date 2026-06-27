@@ -18,6 +18,18 @@ DEFAULT_MAX_TOKENS = 16384
 SAFE_OPENROUTER_DEFAULT_MAX_TOKENS = 8192
 DEFAULT_CONTEXT_WINDOW = 200_000
 
+_OPENROUTER_REASONING_FALLBACK_MODELS = {
+    "anthropic/claude-opus-4.8",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "google/gemini-3-flash-preview",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.7-code",
+    "openai/gpt-5.5",
+    "qwen/qwen3.7-plus",
+    "z-ai/glm-5.2",
+}
+
 # Static fallback for squilla-router tier models + default model.
 # Used when OpenRouter API is unreachable at boot.
 # Format: model_id → (max_output_tokens, context_window)
@@ -109,10 +121,7 @@ class ModelCatalog:
             provider_spec = None
 
         model_l = model_id.strip().lower()
-        if provider_id == "openrouter" and model_l in {
-            "deepseek/deepseek-v4-flash",
-            "deepseek/deepseek-v4-pro",
-        }:
+        if provider_id == "openrouter" and model_l in _OPENROUTER_REASONING_FALLBACK_MODELS:
             return ModelCapabilities(
                 supports_reasoning=True,
                 supports_tools=True,

@@ -8,6 +8,7 @@ classification, retry policy, fallback handoff, and usage aggregation.
 from __future__ import annotations
 
 import inspect
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,15 @@ from opensquilla.provider.types import (
     ToolUseEndEvent,
     ToolUseStartEvent,
 )
+
+
+def _strict_thinking_required() -> bool:
+    return os.environ.get("OPENSQUILLA_STRICT_THINKING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 @dataclass(frozen=True)
@@ -259,6 +269,7 @@ async def collect_visible_text_with_harness(
                 input_tokens=usage.input_tokens,
             )
             and bool(current_config.thinking)
+            and not _strict_thinking_required()
             and retry_policy.can_retry_attempt(
                 _ProviderAttemptKind.REASONING_ONLY,
                 attempts_used,
@@ -283,6 +294,7 @@ async def collect_visible_text_with_harness(
         if (
             classification.kind == _ProviderAttemptKind.REASONING_ONLY
             and retry_reasoning_only_without_thinking
+            and not (bool(current_config.thinking) and _strict_thinking_required())
             and retry_policy.can_retry_attempt(
                 _ProviderAttemptKind.REASONING_ONLY,
                 attempts_used,

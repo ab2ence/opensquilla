@@ -1017,7 +1017,6 @@ class FusionReplyProvider:
                 if base_config.max_tokens
                 else max_tokens
             ),
-            "thinking": False,
             "tool_choice": "none",
             "model_capabilities": model_capabilities or base_config.model_capabilities,
         }

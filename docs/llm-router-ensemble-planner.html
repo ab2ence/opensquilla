@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM Router + Rule-based Ensemble Planner 设计草案</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --paper: #ffffff;
+      --ink: #1f2937;
+      --muted: #64748b;
+      --line: #e5e7eb;
+      --soft: #f1f5f9;
+      --blue: #2563eb;
+      --blue-soft: #eff6ff;
+      --green: #059669;
+      --green-soft: #ecfdf5;
+      --amber: #b45309;
+      --amber-soft: #fffbeb;
+      --red: #dc2626;
+      --red-soft: #fef2f2;
+      --violet: #7c3aed;
+      --violet-soft: #f5f3ff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: var(--sans);
+      line-height: 1.7;
+    }
+
+    .page {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 40px 24px 72px;
+    }
+
+    header {
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--paper);
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      margin-bottom: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 42px;
+      line-height: 1.16;
+      letter-spacing: -0.02em;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      line-height: 1.35;
+    }
+
+    p { margin: 0 0 12px; }
+    .muted { color: var(--muted); }
+
+    section {
+      margin-top: 22px;
+      padding: 26px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--paper);
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .card {
+      min-height: 100%;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    .card.blue { background: var(--blue-soft); border-color: #bfdbfe; }
+    .card.green { background: var(--green-soft); border-color: #bbf7d0; }
+    .card.amber { background: var(--amber-soft); border-color: #fde68a; }
+    .card.red { background: var(--red-soft); border-color: #fecaca; }
+    .card.violet { background: var(--violet-soft); border-color: #ddd6fe; }
+
+    .badge {
+      display: inline-flex;
+      margin-bottom: 10px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .flow-wide {
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    }
+
+    .step {
+      position: relative;
+      min-height: 118px;
+      padding: 16px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      overflow-wrap: anywhere;
+    }
+
+    .step:not(:last-child)::after {
+      content: ">";
+      position: absolute;
+      top: 50%;
+      right: -13px;
+      transform: translateY(-50%);
+      color: #94a3b8;
+      font-weight: 800;
+      z-index: 1;
+    }
+
+    .step b {
+      display: block;
+      font-size: 14px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .step span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f8fafc;
+      color: #334155;
+      font-weight: 800;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    code, pre {
+      font-family: var(--mono);
+    }
+
+    code {
+      padding: 2px 5px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--soft);
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 16px;
+      overflow: auto;
+      border-radius: 12px;
+      background: #111827;
+      color: #e5e7eb;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    ul {
+      margin: 8px 0 0 20px;
+      padding: 0;
+    }
+
+    li { margin: 5px 0; }
+
+    .callout {
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-left: 4px solid var(--blue);
+      border-radius: 10px;
+      background: var(--blue-soft);
+    }
+
+    .callout.green { border-left-color: var(--green); background: var(--green-soft); }
+    .callout.amber { border-left-color: var(--amber); background: var(--amber-soft); }
+    .callout.red { border-left-color: var(--red); background: var(--red-soft); }
+
+    .decision-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .decision {
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    .decision b { display: block; margin-bottom: 4px; }
+
+    .footer {
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      h1 { font-size: 32px; }
+      .grid-2, .grid-3, .flow { grid-template-columns: 1fr; }
+      .step:not(:last-child)::after {
+        content: "v";
+        top: auto;
+        right: 50%;
+        bottom: -20px;
+        transform: translateX(50%);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div class="kicker">Draft · Local Design Document</div>
+      <h1>LLM Router + Rule-based Ensemble Planner</h1>
+      <p class="muted">
+        本文是阶段一设计草案：以 2026-06-26 v7 Core 输出交接文档为准，直接使用 LLM Router 原始
+        <code>model_router.v7-core</code> JSON；当用户在 Settings 开启多模型融合时，由确定性的规则匹配层选择
+        proposer 和 aggregator。
+        本文档只作为本地设计稿迭代，不涉及上传。
+      </p>
+    </header>
+
+    <section>
+      <h2>1. 当前决策</h2>
+      <div class="decision-list">
+        <div class="decision">
+          <b>LLM Router 输出就是任务画像</b>
+          <span class="muted">不再额外包装 <code>task_profile</code> schema，后续 planner 直接读取原始 <code>model_router.v7-core</code> JSON。</span>
+        </div>
+        <div class="decision">
+          <b><code>target.tier</code> 是权威字段</b>
+          <span class="muted">训练数据原生字段是 <code>target.tier</code>，serving 若输出 <code>target.level</code> 只作为兼容读取。</span>
+        </div>
+        <div class="decision">
+          <b>模型选择必须是确定性规则</b>
+          <span class="muted">LLM Router 负责理解任务，不直接选择模型名；proposer / aggregator 由规则层从 catalog 选择。</span>
+        </div>
+        <div class="decision">
+          <b>多模型融合由 Settings 开关控制</b>
+          <span class="muted">不开启时走原来的单模型模式；开启时才进入 planner，生成 per-turn <code>ensemble_plan</code>。</span>
+        </div>
+        <div class="decision">
+          <b>Runtime constraints 与 Router JSON 分离</b>
+          <span class="muted">工具、附件、预算、输入长度不从 LLM JSON 里读，由运行时输入提供。</span>
+        </div>
+        <div class="decision">
+          <b>Catalog 是简单模型池</b>
+          <span class="muted">第一版只维护模型、角色、tags、上下文窗口、成本和延迟。模型池里的模型默认可用。</span>
+        </div>
+        <div class="decision">
+          <b>执行计划是 per-turn metadata</b>
+          <span class="muted">planner 输出放在当前 turn，不修改全局 <code>llm_ensemble.profiles.default</code>，避免并发污染。</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 目标架构</h2>
+      <p class="muted">
+        现有 <code>api_v7_core</code> 继续作为默认 LLM Router。新增部分只在 Settings 开启多模型融合后生效：
+        把原始 router JSON、运行时上下文和 Catalog 转成可解释的 proposer / aggregator 计划。
+      </p>
+      <div class="flow">
+        <div class="step"><b>Agent Turn</b><span>用户输入、历史、附件</span></div>
+        <div class="step"><b>LLM Router</b><span>原始 model_router.v7-core</span></div>
+        <div class="step"><b>Settings Toggle</b><span>多模型融合开关</span></div>
+        <div class="step"><b>Runtime Context</b><span>预算、工具、附件、输入长度</span></div>
+        <div class="step"><b>Catalog</b><span>模型、角色、tags、成本延迟</span></div>
+        <div class="step"><b>Tag Mapper</b><span>required_tags / preferred_tags</span></div>
+        <div class="step"><b>Rule Planner</b><span>过滤、排序、互补</span></div>
+        <div class="step"><b>Ensemble Plan</b><span>2-3 proposer + aggregator</span></div>
+        <div class="step"><b>Executor</b><span>复用 provider / EnsembleProvider</span></div>
+      </div>
+      <div class="callout">
+        <strong>边界：</strong>关闭开关时保留现有单模型路径；开启开关时 LLM Router 做任务理解，Rule Planner 做融合模型选择，现有 EnsembleProvider 做并行 proposer 与 single-pass synthesis。
+      </div>
+    </section>
+
+    <section>
+      <h2>3. LLM Router 原始 JSON</h2>
+      <p class="muted">
+        planner 直接读取 <code>ctx.metadata.routing_extra.router_raw_output</code>。训练契约里的权威字段是
+        <code>target.tier</code>；如果 serving 输出 <code>target.level</code>，只在读取层做兼容。
+      </p>
+      <pre>{
+  "schema": "model_router.v7-core",
+  "intent": {
+    "type": "debug",
+    "domain": "software_engineering",
+    "language": "mixed"
+  },
+  "response": {
+    "interaction": "direct",
+    "shape": "mixed"
+  },
+  "target": {
+    "family": "code",
+    "tier": 3,
+    "signals": {
+      "context": 1,
+      "precision": 3,
+      "risk": 1,
+      "structure": 3
+    }
+  }
+}</pre>
+      <div class="callout amber">
+        <strong>读取规则：</strong><code>schema</code> 必须等于 <code>model_router.v7-core</code>。
+        能力档位读取 <code>target.tier</code>，兼容 serving 的 <code>target.level</code>：
+        <code>tier = target.tier ?? target.level</code>。
+      </div>
+      <table style="margin-top:16px;">
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>训练契约</th>
+            <th>Planner 用法</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>intent.type</code></td>
+            <td>22 个枚举，例如 <code>agent_execute</code>、<code>debug</code>、<code>extract</code>。</td>
+            <td>决定任务特化 requirement，例如 code debug、agentic execution、structured extraction。</td>
+          </tr>
+          <tr>
+            <td><code>intent.domain</code></td>
+            <td>14 个业务/知识领域。</td>
+            <td>只做辅助信号；不要把 domain 当作模型能力族。</td>
+          </tr>
+          <tr>
+            <td><code>response.shape</code></td>
+            <td><code>plain_text</code>、<code>structured_text</code>、<code>json</code>、<code>table</code>、<code>code</code>、<code>mixed</code>。</td>
+            <td>决定结构化输出、代码输出、表格输出等 requirement。</td>
+          </tr>
+          <tr>
+            <td><code>response.interaction</code></td>
+            <td><code>direct</code>、<code>clarify_required</code>、<code>safe_completion</code>。</td>
+            <td><code>safe_completion</code> 先交给 Policy Engine；planner 不替代安全策略。</td>
+          </tr>
+          <tr>
+            <td><code>target.family</code></td>
+            <td>10 个主瓶颈能力族。</td>
+            <td>planner 的主路由依据。</td>
+          </tr>
+          <tr>
+            <td><code>target.tier</code></td>
+            <td>整数 <code>1..4</code>，训练数据没有 <code>5</code>。</td>
+            <td>在多模型融合开启时，决定 proposer 数量和融合强度。</td>
+          </tr>
+          <tr>
+            <td><code>target.signals</code></td>
+            <td><code>context</code>、<code>precision</code>、<code>structure</code>、<code>risk</code> 均为整数信号。</td>
+            <td>作为门槛和保守升级依据，不做线性魔法权重。</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout red">
+        <strong>禁止期待模型输出：</strong><code>tools</code>、<code>freshness</code>、<code>fallback</code>、
+        <code>secondary</code>、<code>constraints</code>、<code>model_name</code>、<code>provider</code>、
+        <code>cost</code>、<code>latency</code>、<code>evidence</code>、<code>explanation</code>、<code>answer</code>。
+        这些字段由运行时和 catalog 提供，不属于 LLM Router 原始 JSON。
+      </div>
+    </section>
+
+    <section>
+      <h2>4. Planner 输入分工</h2>
+      <div class="grid grid-3">
+        <div class="card blue">
+          <span class="badge">Router JSON</span>
+          <h3>任务理解</h3>
+          <ul>
+            <li><code>target.family</code></li>
+            <li><code>target.tier</code></li>
+            <li><code>target.signals</code></li>
+            <li><code>intent.type</code> / <code>response.shape</code></li>
+          </ul>
+        </div>
+        <div class="card green">
+          <span class="badge">Runtime</span>
+          <h3>运行时上下文</h3>
+          <ul>
+            <li>工具、视觉、附件需求</li>
+            <li>估算输入 token</li>
+            <li>本次调用预算</li>
+          </ul>
+        </div>
+        <div class="card amber">
+          <span class="badge">Catalog</span>
+          <h3>模型池</h3>
+          <ul>
+            <li>基础字段：模型、provider、角色</li>
+            <li>角色：proposer / aggregator</li>
+            <li>能力标签：按 Router 字段映射</li>
+            <li>运行字段：成本、延迟、上下文窗口</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>原则：</strong>不要把运行时字段塞回 LLM Router schema，也不要让 LLM Router 输出模型名。
+      </div>
+    </section>
+
+    <section>
+      <h2>5. Tagged Model Catalog：Planner 的候选模型池</h2>
+      <p class="muted">
+        第一版 Catalog 不做复杂模型画像，也不写能力等级。它只是一个带标签的候选模型列表。
+        Rule Planner 把 LLM Router 的 <code>target.family</code>、<code>target.tier</code>、
+        <code>intent.type</code>、<code>response.shape</code> 映射成 <code>required_tags</code>
+        和 <code>preferred_tags</code>，再用这些 tag 去匹配模型。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>类型 / 取值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>catalog_version</code></td>
+            <td>string，例如 <code>2026-07-01.1</code></td>
+            <td>用于日志回放。planner 必须记录本次选择使用的 catalog 版本。</td>
+          </tr>
+          <tr>
+            <td><code>models</code></td>
+            <td>array</td>
+            <td>当前可被 planner 考虑的模型列表。</td>
+          </tr>
+          <tr>
+            <td><code>model_id</code></td>
+            <td>string</td>
+            <td>模型调用 ID，例如 OpenRouter 的 <code>provider/model</code>。planner 不在规则里硬编码具体模型名。</td>
+          </tr>
+          <tr>
+            <td><code>provider</code></td>
+            <td>string，例如 <code>openrouter</code></td>
+            <td>实际调用 provider。第一版可以只支持当前 provider。</td>
+          </tr>
+          <tr>
+            <td><code>roles</code></td>
+            <td>array of <code>proposer</code> / <code>aggregator</code></td>
+            <td>模型可承担的 ensemble 角色。proposer 负责候选答案，aggregator 负责阅读候选并融合。</td>
+          </tr>
+          <tr>
+            <td><code>tags</code></td>
+            <td>array of string</td>
+            <td>模型能力标签。planner 只做 tag 匹配，不解释 tag 内部强弱。</td>
+          </tr>
+          <tr>
+            <td><code>context_window</code></td>
+            <td>integer</td>
+            <td>上下文窗口 token 数。用于长上下文硬过滤。</td>
+          </tr>
+          <tr>
+            <td><code>cost</code></td>
+            <td><code>low</code> / <code>medium</code> / <code>high</code> / <code>premium</code></td>
+            <td>成本桶。同等匹配时用于排序，不参与能力判断。</td>
+          </tr>
+          <tr>
+            <td><code>latency</code></td>
+            <td><code>low</code> / <code>medium</code> / <code>high</code></td>
+            <td>延迟桶。同等匹配时用于排序，不参与能力判断。</td>
+          </tr>
+        </tbody>
+      </table>
+      <table style="margin-top:14px;">
+        <thead>
+          <tr>
+            <th>第一版 tag</th>
+            <th>对应 Router 字段</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>agentic</code></td>
+            <td><code>target.family=agentic</code> 或 <code>intent.type=agent_execute</code></td>
+            <td>agent loop、规划执行、多步任务。</td>
+          </tr>
+          <tr>
+            <td><code>tool_use</code></td>
+            <td>runtime 表示本 turn 需要工具调用</td>
+            <td>工具调用和参数生成，不从 Router JSON 读取。</td>
+          </tr>
+          <tr>
+            <td><code>code</code></td>
+            <td><code>target.family=code</code>、<code>intent.type=debug</code> / <code>code_review</code></td>
+            <td>代码生成、调试、修复、审查。</td>
+          </tr>
+          <tr>
+            <td><code>long_context</code></td>
+            <td><code>target.family=document</code> 或 <code>target.signals.context&gt;=3</code></td>
+            <td>长上下文理解、压缩和跨段综合。</td>
+          </tr>
+          <tr>
+            <td><code>structured_output</code></td>
+            <td><code>response.shape=json/table</code> 或 <code>target.signals.structure=5</code></td>
+            <td>严格 JSON、表格、结构化文本输出。</td>
+          </tr>
+          <tr>
+            <td><code>reasoning</code></td>
+            <td><code>target.family=reasoning</code>、<code>precision&gt;=4</code>、<code>risk&gt;=4</code></td>
+            <td>判断、验证、发现错误和处理高精度任务。</td>
+          </tr>
+          <tr>
+            <td><code>vision</code></td>
+            <td><code>target.family=visual</code> 或附件包含图像</td>
+            <td>图像理解、多模态输入。</td>
+          </tr>
+          <tr>
+            <td><code>math</code></td>
+            <td><code>target.family=math</code> 或 <code>intent.type=math_solve</code></td>
+            <td>数学推理和计算。</td>
+          </tr>
+          <tr>
+            <td><code>instruction_following</code></td>
+            <td><code>response.shape</code> 有强格式要求，或 aggregator 角色</td>
+            <td>遵守输出格式、约束和最终表达。</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout green">
+        <strong>联动方式：</strong>Router JSON 不直接选模型，而是映射成 <code>required_tags</code> 和
+        <code>preferred_tags</code>。模型必须包含 required tags；preferred tags 命中越多越靠前。
+      </div>
+      <pre>{
+  "router_raw_output": {
+    "intent": {"type": "debug", "domain": "software_engineering"},
+    "response": {"shape": "mixed", "interaction": "direct"},
+    "target": {
+      "family": "code",
+      "tier": 3,
+      "signals": {"context": 1, "precision": 3, "structure": 3, "risk": 1}
+    }
+  },
+  "planner_match": {
+    "proposer_count": 2,
+    "required_tags": ["code"],
+    "preferred_tags": ["reasoning", "structured_output"],
+    "aggregator_preferred_tags": ["reasoning", "instruction_following", "structured_output"],
+    "reason_codes": [
+      "target.family=code",
+      "target.tier=3",
+      "intent.type=debug",
+      "response.shape=mixed"
+    ]
+  }
+}</pre>
+    </section>
+
+    <section>
+      <h2>6. Catalog 草案</h2>
+      <pre>{
+  "catalog_version": "2026-07-01.1",
+  "models": [
+    {
+      "model_id": "provider/model-a",
+      "provider": "openrouter",
+      "roles": ["proposer", "aggregator"],
+      "tags": ["code", "reasoning", "structured_output", "instruction_following"],
+      "context_window": 128000,
+      "cost": "medium",
+      "latency": "medium"
+    }
+  ]
+}</pre>
+    </section>
+
+    <section>
+      <h2>7. Planner 流程</h2>
+      <div class="grid grid-3">
+        <div class="card blue">
+          <span class="badge">Step 1</span>
+          <h3>硬过滤</h3>
+          <ul>
+            <li>角色：proposer / aggregator</li>
+            <li>上下文窗口足够</li>
+            <li>runtime 需要工具或视觉时，模型必须包含对应 tag</li>
+            <li>成本、延迟满足本次预算偏好</li>
+          </ul>
+        </div>
+        <div class="card green">
+          <span class="badge">Step 2</span>
+          <h3>生成 tags</h3>
+          <ul>
+            <li><code>target.family</code> 决定 <code>required_tags</code></li>
+            <li><code>target.tier</code> 决定默认执行强度</li>
+            <li><code>intent.type</code> 补充 <code>preferred_tags</code></li>
+            <li><code>response.shape</code> 补充结构化输出 tag</li>
+            <li><code>target.signals</code> 触发长上下文、推理、安全保守策略</li>
+          </ul>
+        </div>
+        <div class="card amber">
+          <span class="badge">Step 3</span>
+          <h3>可解释排序</h3>
+          <ul>
+            <li>先满足 required tags</li>
+            <li>再看 preferred tags 命中数</li>
+            <li>再看角色适配、成本和延迟</li>
+            <li>最后处理成本、延迟和互补性</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>8. Router 字段到 Tags 的映射规则</h2>
+      <p class="muted">
+        这一节只定义 Router JSON 如何映射到 <code>required_tags</code> 和 <code>preferred_tags</code>。
+        这些 tags 直接和 Catalog 里的 <code>tags</code> 字段匹配，不再引入新的 requirement 对象。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Router / Runtime 条件</th>
+            <th>Required Tags</th>
+            <th>Preferred Tags</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>target.family=agentic</code> 或 <code>intent.type=agent_execute</code></td>
+            <td><code>agentic</code></td>
+            <td><code>tool_use</code>, <code>reasoning</code></td>
+          </tr>
+          <tr>
+            <td><code>target.family=code</code></td>
+            <td><code>code</code></td>
+            <td><code>reasoning</code>, <code>structured_output</code></td>
+          </tr>
+          <tr>
+            <td><code>target.family=document</code></td>
+            <td><code>long_context</code></td>
+            <td><code>reasoning</code>, <code>instruction_following</code></td>
+          </tr>
+          <tr>
+            <td><code>target.family=reasoning</code></td>
+            <td><code>reasoning</code></td>
+            <td><code>instruction_following</code></td>
+          </tr>
+          <tr>
+            <td><code>target.family=visual</code> 或图像附件</td>
+            <td><code>vision</code></td>
+            <td><code>reasoning</code></td>
+          </tr>
+          <tr>
+            <td><code>target.family=math</code> 或 <code>intent.type=math_solve</code></td>
+            <td><code>math</code></td>
+            <td><code>reasoning</code></td>
+          </tr>
+          <tr>
+            <td><code>response.shape=json/table</code> 或 <code>target.signals.structure=5</code></td>
+            <td><code>structured_output</code></td>
+            <td><code>instruction_following</code></td>
+          </tr>
+          <tr>
+            <td><code>target.signals.context&gt;=3</code></td>
+            <td><code>long_context</code></td>
+            <td><code>reasoning</code></td>
+          </tr>
+          <tr>
+            <td><code>target.signals.precision&gt;=4</code></td>
+            <td></td>
+            <td><code>reasoning</code>, <code>instruction_following</code></td>
+          </tr>
+          <tr>
+            <td>runtime 需要工具调用</td>
+            <td><code>tool_use</code></td>
+            <td><code>agentic</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout amber">
+        <strong>安全边界：</strong><code>response.interaction=safe_completion</code> 或 <code>target.signals.risk&gt;=4</code>
+        不由 planner 替代安全策略。Policy Engine 先处理；planner 只在允许执行时选择更稳的模型。
+      </div>
+    </section>
+
+    <section>
+      <h2>9. Proposer 选择</h2>
+      <p class="muted">
+        Proposer 负责生成候选答案。只有 Settings 开启多模型融合时才执行本节规则；关闭时不进入 planner，
+        直接沿用原来的单模型路径。
+      </p>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Proposer 数量</h3>
+          <p class="muted">
+            开启融合后，<code>target.tier</code> 只决定 proposer 数量，不再决定是否使用单模型。
+          </p>
+          <table>
+            <thead>
+              <tr><th>条件</th><th>数量</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>target.tier=1</code></td><td>2 proposers + 1 aggregator</td></tr>
+              <tr><td><code>target.tier=2</code></td><td>2 proposers + 1 aggregator</td></tr>
+              <tr><td><code>target.tier=3</code></td><td>默认 2 proposers + 1 aggregator；repair、agentic、高 precision/context 可到 3</td></tr>
+              <tr><td><code>target.tier=4</code></td><td>默认 3 proposers + 1 aggregator；<code>safe_completion</code> 先经过 Policy Engine</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>选择规则</h3>
+          <ul>
+            <li><code>roles</code> 包含 <code>proposer</code>。</li>
+            <li><code>context_window</code> 足够容纳当前输入。</li>
+            <li>必须包含全部 <code>required_tags</code>。</li>
+            <li><code>preferred_tags</code> 命中越多越靠前。</li>
+            <li>需要多个 proposer 时，后续 proposer 优先补齐尚未覆盖的 preferred tag。</li>
+            <li>同分时按 <code>cost</code>、<code>latency</code> 排序。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>10. Aggregator 选择</h2>
+      <p class="muted">
+        Aggregator 负责阅读 proposer 候选并输出最终答案。它不一定是最会做原任务的模型，但必须适合综合、判断和遵循格式。
+      </p>
+      <div class="grid grid-2">
+        <div class="card violet">
+          <h3>基本规则</h3>
+          <ul>
+            <li><code>roles</code> 包含 <code>aggregator</code>。</li>
+            <li>上下文窗口能容纳原始输入和 proposer outputs</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>偏好规则</h3>
+          <ul>
+            <li>优先包含 <code>reasoning</code>。</li>
+            <li>优先包含 <code>instruction_following</code>。</li>
+            <li><code>response.shape=json/table</code> 时优先包含 <code>structured_output</code>。</li>
+            <li>输入或候选很长时优先包含 <code>long_context</code>。</li>
+            <li><code>target.family=code</code> 时可偏好包含 <code>code</code>，但不强制。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>11. Planner 输出契约</h2>
+      <p class="muted">
+        输出只描述执行计划，不复制 LLM Router 原始 JSON。原始 JSON 继续留在 <code>routing_extra.router_raw_output</code>。
+      </p>
+      <pre>{
+  "schema": "opensquilla.ensemble_plan.v1",
+  "mode": "ensemble_single_pass",
+  "catalog_version": "2026-07-01.1",
+  "proposers": [
+    {
+      "provider": "openrouter",
+      "model": "provider/model-a",
+      "thinking": "high",
+      "reasons": [
+        "role contains proposer",
+        "tags contains required code",
+        "matched preferred tags: reasoning, structured_output"
+      ]
+    },
+    {
+      "provider": "openrouter",
+      "model": "provider/model-b",
+      "thinking": "medium",
+      "reasons": [
+        "role contains proposer",
+        "tags contains required code",
+        "selected to complement proposer_1 with lower latency"
+      ]
+    }
+  ],
+  "aggregator": {
+    "provider": "openrouter",
+    "model": "provider/model-c",
+    "thinking": "high",
+    "reasons": [
+      "role contains aggregator",
+      "matched preferred tags: reasoning, instruction_following"
+    ]
+  },
+  "strategy": "single_pass_synthesis",
+  "reason_codes": [
+    "target.family=code",
+    "target.tier=3",
+    "intent.type=debug",
+    "target.signals.precision=3",
+    "response.shape=mixed",
+    "k=2"
+  ]
+}</pre>
+    </section>
+
+    <section>
+      <h2>12. 接入点：per-turn ensemble_plan</h2>
+      <p class="muted">
+        <code>ensemble_plan</code> 是每个 turn 的动态融合计划。它不是全局配置，也不是 Router JSON 的一部分。
+        Settings 关闭多模型融合时不生成它，runtime 继续走原来的单模型路径；Settings 开启后才生成它，并进入融合执行阶段。
+      </p>
+      <div class="flow flow-wide">
+        <div class="step"><b>apply_squilla_router</b><span>只负责 LLM Router / tier / routing_extra</span></div>
+        <div class="step"><b>Settings</b><span>检查多模型融合开关</span></div>
+        <div class="step"><b>apply_ensemble_planner</b><span>开启时读取 router_raw_output 和 catalog</span></div>
+        <div class="step"><b>ctx.metadata</b><span>开启时写入 ensemble_plan</span></div>
+        <div class="step"><b>runtime</b><span>读取 ensemble_plan</span></div>
+        <div class="step"><b>provider</b><span>构造 EnsembleProvider</span></div>
+      </div>
+      <div class="grid grid-3" style="margin-top:14px;">
+        <div class="card blue">
+          <h3><code>apply_squilla_router</code></h3>
+          <p class="muted">
+            继续负责当前 LLM Router 逻辑：调用 <code>api_v7_core</code>，写入
+            <code>routing_extra.router_raw_output</code>、<code>routed_tier</code> 和基础路由元数据。
+          </p>
+        </div>
+        <div class="card green">
+          <h3><code>apply_ensemble_planner</code></h3>
+          <p class="muted">
+            新增独立 step，只在 Settings 开启多模型融合时执行。读取
+            <code>routing_extra.router_raw_output</code>，按 tag 规则查询 Catalog，生成当前 turn 的
+            <code>ctx.metadata["ensemble_plan"]</code>。
+          </p>
+        </div>
+        <div class="card amber">
+          <h3><code>runtime</code></h3>
+          <p class="muted">
+            不重新理解 Router JSON。Settings 关闭时沿用原来的单模型 provider；Settings 开启且存在
+            <code>ensemble_plan</code> 时，构造 <code>EnsembleProvider</code>。
+          </p>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <h3>Ensemble Plan</h3>
+        <pre>{
+  "schema": "opensquilla.ensemble_plan.v1",
+  "mode": "ensemble_single_pass",
+  "proposers": [
+    {"provider": "openrouter", "model": "provider/model-a"},
+    {"provider": "openrouter", "model": "provider/model-b"}
+  ],
+  "aggregator": {
+    "provider": "openrouter",
+    "model": "provider/model-c"
+  },
+  "strategy": "single_pass_synthesis"
+}</pre>
+      </div>
+      <div class="callout red">
+        <strong>不要做：</strong>不要每个 turn 修改全局 <code>config.llm_ensemble.profiles.default</code>。
+        <code>ensemble_plan</code> 是 Settings 开启后的 per-turn decision，必须只存在当前 turn 的 metadata 中。
+      </div>
+    </section>
+
+    <section>
+      <h2>13. 待讨论问题</h2>
+      <div class="decision-list">
+        <div class="decision">
+          <b>第一版模型池放哪些模型，是否只覆盖当前默认 OpenRouter 候选池？</b>
+          <span class="muted">当前答案：只覆盖当前默认 OpenRouter 候选池，先不引入多 provider 差异。</span>
+        </div>
+        <div class="decision">
+          <b>每个模型的 <code>tags</code> 先由谁维护，第一版是否手写即可？</b>
+          <span class="muted">当前答案：第一版先手写维护，后续再考虑从评测或线上数据更新。</span>
+        </div>
+        <div class="decision">
+          <b><code>target.tier</code> 到 proposer 数量的规则是否就按当前表执行？</b>
+          <span class="muted">当前答案：确定，第一版就按第 9 节当前表执行。</span>
+        </div>
+        <div class="decision">
+          <b>多模型融合是否默认开启，还是由 Settings 按钮控制？</b>
+          <span class="muted">当前答案：由 Settings 按钮控制。不开启时走原来的单模型模式；开启时走融合。</span>
+        </div>
+        <div class="decision">
+          <b>Aggregator 的资格是否只由 <code>roles</code> 里的 <code>aggregator</code> 决定？</b>
+          <span class="muted">当前答案：是。<code>tags</code> 只用于排序偏好，不用于定义 aggregator 资格。</span>
+        </div>
+        <div class="decision">
+          <b>LLM Router 后处理得到的 <code>thinking_mode</code> 是否影响 ensemble member 的 thinking 设置？</b>
+          <span class="muted">当前答案：跟随使用。第一版让 proposer 和 aggregator 的 thinking 设置跟随当前 turn 的 <code>thinking_mode</code>。</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer">
+      Local draft: docs/llm-router-ensemble-planner.html
+    </div>
+  </main>
+</body>
+</html>

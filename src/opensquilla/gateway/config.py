@@ -806,8 +806,6 @@ ROUTER_TIER_PROFILE_IDS = frozenset(
         "moonshot",
     }
 )
-
-
 def _merge_tier_dicts(defaults: dict, overrides: object) -> dict:
     merged = {name: dict(value) for name, value in defaults.items()}
     if not overrides:
@@ -1107,7 +1105,7 @@ class SquillaRouterConfig(BaseSettings):
     enabled: bool = True
     auto_thinking: bool = True
     rollout_phase: str = "full"  # "observe" | "prompt_only" | "full"
-    strategy: str = "v4_phase3"
+    strategy: str = "api_v7_core"
     tier_profile: str | None = None
     visual_mode: str = "real_candidates"
     tiers: dict = Field(default_factory=_default_tiers)
@@ -1116,6 +1114,15 @@ class SquillaRouterConfig(BaseSettings):
     confidence_high_tier_margin: float = Field(default=0.05, ge=0.0)
     v4_bundle_dir: str | None = None  # V4 Phase 3 bundle root; defaults to bundled assets
     v4_use_aux_head: bool | None = True  # override router.runtime.yaml aux head when set
+    api_v7_core_url: str | None = None
+    api_v7_core_model: str = "Qwen3.5-9B"
+    api_v7_core_api_key: str = ""
+    api_v7_core_api_key_env: str = "OPENSQUILLA_SQUILLA_ROUTER_API_V7_CORE_API_KEY"
+    api_v7_core_max_tokens: int = Field(default=512, ge=16)
+    api_v7_core_temperature: float = Field(default=0.0, ge=0.0)
+    api_v7_core_disable_thinking: bool = True
+    api_v7_core_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    api_v7_core_context_max_chars: int = Field(default=4000, ge=0)
     routing_timeout_seconds: float = Field(default=5.0, gt=0.0)
     kv_cache_anti_downgrade_enabled: bool = True
     kv_cache_anti_downgrade_window_seconds: int = 600

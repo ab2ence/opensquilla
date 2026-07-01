@@ -34,11 +34,19 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
     assert cfg.enabled is True
     assert cfg.auto_thinking is True
     assert cfg.rollout_phase == "full"
-    assert cfg.strategy == "v4_phase3"
+    assert cfg.strategy == "api_v7_core"
     assert cfg.default_tier == "c1"
     assert cfg.confidence_threshold == 0.5
     assert cfg.confidence_high_tier_margin == 0.05
     assert cfg.v4_use_aux_head is True
+    assert cfg.api_v7_core_url is None
+    assert cfg.api_v7_core_model == "Qwen3.5-9B"
+    assert cfg.api_v7_core_api_key_env == "OPENSQUILLA_SQUILLA_ROUTER_API_V7_CORE_API_KEY"
+    assert cfg.api_v7_core_max_tokens == 512
+    assert cfg.api_v7_core_temperature == 0.0
+    assert cfg.api_v7_core_disable_thinking is True
+    assert cfg.api_v7_core_confidence == 1.0
+    assert cfg.api_v7_core_context_max_chars == 4000
     assert cfg.kv_cache_anti_downgrade_enabled is True
     assert cfg.kv_cache_anti_downgrade_window_seconds == 600
     assert cfg.complaint_upgrade_enabled is True
@@ -309,7 +317,14 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     assert squilla_router["enabled"] is True
     assert squilla_router["auto_thinking"] is True
     assert squilla_router["rollout_phase"] == "full"
-    assert squilla_router["strategy"] == "v4_phase3"
+    assert squilla_router["strategy"] == "api_v7_core"
+    assert squilla_router["api_v7_core_url"] == ""
+    assert squilla_router["api_v7_core_model"] == "Qwen3.5-9B"
+    assert (
+        squilla_router["api_v7_core_api_key_env"]
+        == "OPENSQUILLA_SQUILLA_ROUTER_API_V7_CORE_API_KEY"
+    )
+    assert squilla_router["api_v7_core_disable_thinking"] is True
     assert "cache_ttl_seconds" not in squilla_router
     assert squilla_router["default_tier"] == "c1"
     assert squilla_router["confidence_threshold"] == 0.5

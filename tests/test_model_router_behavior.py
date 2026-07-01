@@ -1107,6 +1107,7 @@ async def test_required_router_runtime_failure_falls_back_to_default_tier(
 
     monkeypatch.setattr(v4_phase3, "V4Phase3Strategy", ExplodingV4Strategy)
     ctx = make_context("Explain the setup steps.")
+    ctx.config.squilla_router.strategy = "v4_phase3"
     ctx.config.squilla_router.require_router_runtime = True
 
     routed = await apply_squilla_router(ctx)
@@ -1127,11 +1128,13 @@ async def test_router_runtime_failure_emits_one_operator_warning(
     caplog.set_level(logging.WARNING)
 
     first = make_context("Explain the setup steps.")
+    first.config.squilla_router.strategy = "v4_phase3"
     first.config.squilla_router.require_router_runtime = True
     await apply_squilla_router(first)
     squilla_router_step._strategy = None
     squilla_router_step._strategy_key = None
     second = make_context("Explain the setup steps again.")
+    second.config.squilla_router.strategy = "v4_phase3"
     second.config.squilla_router.require_router_runtime = True
     await apply_squilla_router(second)
 

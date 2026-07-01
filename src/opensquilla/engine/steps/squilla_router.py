@@ -341,6 +341,20 @@ class _UnavailableV4Strategy:
 def _strategy_cache_key(config: object) -> tuple:
     strategy_name = _strategy_name(config)
     confidence = getattr(config, "confidence_threshold", 0.5)
+    if strategy_name == "api_v7_core":
+        return (
+            strategy_name,
+            getattr(config, "api_v7_core_url", None),
+            getattr(config, "api_v7_core_model", None),
+            getattr(config, "api_v7_core_api_key", None),
+            getattr(config, "api_v7_core_api_key_env", None),
+            getattr(config, "api_v7_core_max_tokens", None),
+            getattr(config, "api_v7_core_temperature", None),
+            getattr(config, "api_v7_core_disable_thinking", None),
+            getattr(config, "api_v7_core_confidence", None),
+            getattr(config, "api_v7_core_context_max_chars", None),
+            confidence,
+        )
     return (
         strategy_name,
         getattr(config, "v4_bundle_dir", None),
@@ -352,6 +366,8 @@ def _strategy_cache_key(config: object) -> tuple:
 
 def _strategy_name(config: object) -> str:
     configured = str(getattr(config, "strategy", "v4_phase3") or "v4_phase3")
+    if configured in {"v4_phase3", "api_v7_core"}:
+        return configured
     if configured != "v4_phase3":
         log.warning(
             "squilla_router.removed_strategy_ignored",
@@ -362,7 +378,7 @@ def _strategy_name(config: object) -> str:
 
 
 def _is_history_strategy(strategy_name: str) -> bool:
-    return strategy_name == "v4_phase3"
+    return strategy_name in {"v4_phase3", "api_v7_core"}
 
 
 def _warn_router_runtime_fallback_once(error: Exception | str) -> None:
@@ -382,6 +398,31 @@ def _get_strategy(config: object) -> RouterStrategy:
             return _strategy
         if _strategy_key is not None and _strategy_key != key:
             _history_store.clear()
+        if _strategy_name(config) == "api_v7_core":
+            from opensquilla.squilla_router.api_v7_core import V7CoreApiStrategy
+
+            strategy = cast(
+                RouterStrategy,
+                V7CoreApiStrategy(
+                    api_url=getattr(config, "api_v7_core_url", None),
+                    model=getattr(config, "api_v7_core_model", "Qwen3.5-9B"),
+                    api_key=getattr(config, "api_v7_core_api_key", ""),
+                    api_key_env=getattr(
+                        config,
+                        "api_v7_core_api_key_env",
+                        "OPENSQUILLA_SQUILLA_ROUTER_API_V7_CORE_API_KEY",
+                    ),
+                    timeout_seconds=getattr(config, "routing_timeout_seconds", 5.0),
+                    max_tokens=getattr(config, "api_v7_core_max_tokens", 512),
+                    temperature=getattr(config, "api_v7_core_temperature", 0.0),
+                    disable_thinking=getattr(config, "api_v7_core_disable_thinking", True),
+                    confidence=getattr(config, "api_v7_core_confidence", 1.0),
+                    context_max_chars=getattr(config, "api_v7_core_context_max_chars", 4000),
+                ),
+            )
+            _strategy = strategy
+            _strategy_key = key
+            return strategy
         from opensquilla.squilla_router.v4_phase3 import V4Phase3Strategy
 
         try:
@@ -1101,7 +1142,14 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             "prev_assistant_text": ctx.metadata.get("router_prev_assistant_text"),
             "prev_assistant_usage": ctx.metadata.get("router_prev_assistant_usage"),
             "history_user_texts": ctx.metadata.get("router_history_user_texts"),
+            "history_messages": ctx.metadata.get("router_history_messages"),
+            "history_estimated_tokens": ctx.metadata.get("router_history_estimated_tokens"),
             "flags_text_override": ctx.metadata.get("router_flags_text_override"),
+            "attachments": ctx.attachments,
+            "estimated_input_tokens": ctx.metadata.get("estimated_input_tokens")
+            or ctx.metadata.get("input_tokens_estimate")
+            or ctx.metadata.get("material_estimated_tokens"),
+            "surface_kind": getattr(ctx, "surface_kind", None),
         },
     )
     tier_name, confidence, source, extra = await strategy.classify(

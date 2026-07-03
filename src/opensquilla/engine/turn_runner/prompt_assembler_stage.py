@@ -448,7 +448,7 @@ class PromptAssemblerStage:
 
         # 6. Effective runtime message + selector override / fallback wrap
         effective_runtime_message = getattr(turn, "message", inp.runtime_message)
-        if inp.model and inp.cloned_selector is not None:
+        if inp.model and not getattr(turn, "model", None) and inp.cloned_selector is not None:
             router_fallback_chain = (
                 turn.metadata.get("router_fallback_chain")
                 if turn.metadata.get("routing_applied") is True
@@ -496,7 +496,7 @@ class PromptAssemblerStage:
             tool_profile=turn.metadata.get("tool_profile"),
         )
 
-        # 9. Resolve model_id: explicit param > pipeline-routed > selector current
+        # 9. Resolve model_id: pipeline-routed > explicit param > selector current
         selector_model = ""
         if inp.cloned_selector is not None:
             try:
@@ -505,7 +505,7 @@ class PromptAssemblerStage:
                 )
             except Exception:  # noqa: BLE001 - defensive
                 selector_model = ""
-        resolved_model = inp.model or turn.model or selector_model
+        resolved_model = getattr(turn, "model", None) or inp.model or selector_model
         provider_name = (
             getattr(provider, "provider_name", "") or type(provider).__name__
         )

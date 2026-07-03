@@ -7,11 +7,11 @@ from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 from opensquilla.provider.selector import ProviderConfig
 
 
-def test_llm_ensemble_defaults_to_disabled() -> None:
+def test_llm_ensemble_defaults_to_enabled() -> None:
     cfg = GatewayConfig()
 
     ensemble = cfg.llm_ensemble
-    assert ensemble.enabled is False
+    assert ensemble.enabled is True
     assert ensemble.mode == "b5_fusion"
     assert ensemble.proposer_tools is False
     assert ensemble.min_successful_proposers == 1
